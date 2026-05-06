@@ -1,17 +1,32 @@
-[package]
-name = "rend"
-version = "0.0.1"
+[workspace]
+resolver = "2"
+members = [
+    "crates/rend",
+    "crates/rend-rocksdb",
+    "crates/rend-server",
+]
+
+[workspace.package]
 edition = "2021"
 publish = false
-description = "An embeddable, sandboxed, affine-typed programming language."
+license = "Apache-2.0"
 
-[dependencies]
-rayon = "1.10"
+[workspace.dependencies]
+rend = { path = "crates/rend" }
+rend-rocksdb = { path = "crates/rend-rocksdb" }
 
-[lib]
-name = "rend"
-path = "src/lib.rs"
+# Server stack
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+thiserror = "1"
+anyhow = "1"
 
-[[bin]]
-name = "rend"
-path = "src/bin/rend.rs"
+# Storage
+rocksdb = { version = "0.22", default-features = false, features = ["snappy"] }

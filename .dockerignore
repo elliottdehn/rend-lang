@@ -1,0 +1,12 @@
+# Reduce build context size — these are not needed in the image.
+target
+.git
+.idea
+.vscode
+*.md
+!README.md
+docs
+crossorg
+deploy/data
+.env
+.env.*

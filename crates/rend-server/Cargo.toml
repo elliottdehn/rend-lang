@@ -1,0 +1,31 @@
+[package]
+name = "rend-server"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "HTTP service exposing the rend runtime — multi-tenant by org namespace, RocksDB-backed."
+
+[[bin]]
+name = "rend-server"
+path = "src/main.rs"
+
+[dependencies]
+rend = { workspace = true }
+rend-rocksdb = { workspace = true }
+rocksdb = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", features = ["json"] }

@@ -1,0 +1,33 @@
+# rend-server compose: one server, one persistent volume.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Hits localhost:8080 — try `curl http://localhost:8080/healthz`.
+
+services:
+  rend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: rend-server:dev
+    container_name: rend-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - rend-data:/data
+    environment:
+      REND_LISTEN: 0.0.0.0:8080
+      REND_DATA_DIR: /data
+      REND_FUEL: "2000000"
+      RUST_LOG: rend_server=info,tower_http=info
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  rend-data:
+    name: rend-data
