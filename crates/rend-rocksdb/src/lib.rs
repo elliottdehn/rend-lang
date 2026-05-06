@@ -80,6 +80,17 @@ pub enum CommitResult {
     Conflict,
 }
 
+/// Internal result of one `try_commit_once` attempt. `Retry` means
+/// "the rocksdb txn lost a race at commit time but the merge was
+/// fundamentally possible — try again with a fresh transaction
+/// against new live state". `Conflict` is terminal: the read set
+/// mismatched in a way merge can't reconcile.
+enum InnerResult {
+    Committed,
+    Conflict,
+    Retry,
+}
+
 /// Outcome of a single nonce CAS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonceResult {
@@ -164,6 +175,16 @@ impl RocksKv {
     /// one bank merge byte-identically to the serialized outcome —
     /// without this, every transfer in a shared org collides on the
     /// pmap's root state cell and 409s.
+    ///
+    /// On a `Busy`/`TryAgain` from `txn.commit()` (another committer
+    /// raced us between our last read and our commit), this loops
+    /// internally: open a fresh transaction, re-read live values,
+    /// re-attempt the merge against the new state. We only surface
+    /// `Conflict` when (a) merge truly cannot reconcile the writes
+    /// (same-key concurrent updates), (b) a non-pmap read mismatched,
+    /// or (c) the inner retry budget is exhausted. The caller's
+    /// re-execute path then doesn't fire on otherwise-mergeable
+    /// conflicts — saving the rend tx execution cost.
     pub fn commit_with_occ(
         &self,
         ns: NamespaceId,
@@ -171,14 +192,43 @@ impl RocksKv {
         writes: &HashMap<u128, Value>,
         pmap_types: &HashMap<u128, (Type, Type)>,
     ) -> Result<CommitResult, rocksdb::Error> {
+        // High cap. Each inner attempt re-runs the merge against the
+        // current live state without re-executing the rend tx, so it's
+        // cheap relative to surfacing Conflict and going back through
+        // the outer do_tx loop. The trade-off vs. surfacing earlier:
+        // worst-case tail latency is higher (a tx that loses many
+        // races spins the merge that many times), but the upside is
+        // that mergeable conflicts almost always commit eventually
+        // instead of 409ing the client. For a transactional workload
+        // this is the right shape — clients shouldn't have to plan
+        // for 14% of their transfers needing re-submission.
+        const INNER_MAX_ATTEMPTS: usize = 16;
+        for _ in 0..INNER_MAX_ATTEMPTS {
+            match self.try_commit_once(ns, reads, writes, pmap_types)? {
+                InnerResult::Committed => return Ok(CommitResult::Committed),
+                InnerResult::Conflict => return Ok(CommitResult::Conflict),
+                // Concurrent committer raced us; re-run the merge
+                // against the new live state without going back up
+                // through the rend re-execute path.
+                InnerResult::Retry => continue,
+            }
+        }
+        Ok(CommitResult::Conflict)
+    }
+
+    fn try_commit_once(
+        &self,
+        ns: NamespaceId,
+        reads: &HashMap<u128, Value>,
+        writes: &HashMap<u128, Value>,
+        pmap_types: &HashMap<u128, (Type, Type)>,
+    ) -> Result<InnerResult, rocksdb::Error> {
         let txn = self.db.transaction();
 
-        // Effective writes start as the tx's writes; pmap merges may
-        // substitute the root pointer and add new HAMT node cells.
         let mut effective_writes: HashMap<u128, Value> = writes.clone();
         let mut merge_node_cells: Vec<(u128, Vec<u8>)> = Vec::new();
 
-        // 1+2: validate the read set, attempting merge on pmap mismatches.
+        // Validate the read set, attempting merge on pmap mismatches.
         // Cells we're also writing don't need `get_for_update`: RocksDB's
         // write-side conflict tracking covers them at commit time, AND
         // we re-validate by hand here. Read-only cells still need watch
@@ -195,7 +245,7 @@ impl RocksKv {
             }
             // Read mismatch. Try a 3-way merge if this is a pmap root.
             let Some((key_ty, val_ty)) = pmap_types.get(cell) else {
-                return Ok(CommitResult::Conflict);
+                return Ok(InnerResult::Conflict);
             };
             let pmap_ty = Type::PMap {
                 key: Box::new(key_ty.clone()),
@@ -203,7 +253,7 @@ impl RocksKv {
             };
             let ancestor_root = match expected {
                 Value::PMap(h) => *h,
-                _ => return Ok(CommitResult::Conflict),
+                _ => return Ok(InnerResult::Conflict),
             };
             let live_root = match on_disk.as_ref()
                 .and_then(|b| rend::serialize::deserialize(b, &pmap_ty))
@@ -213,7 +263,7 @@ impl RocksKv {
             };
             let our_root = match effective_writes.get(cell) {
                 Some(Value::PMap(h)) => *h,
-                _ => return Ok(CommitResult::Conflict),
+                _ => return Ok(InnerResult::Conflict),
             };
             // Build a Kv view that overlays the tx's in-flight writes
             // on top of the underlying namespace; the merge may need
@@ -225,13 +275,13 @@ impl RocksKv {
                 &merge_kv, key_ty, val_ty,
             ) else {
                 // Real conflict — both sides changed the same key.
-                return Ok(CommitResult::Conflict);
+                return Ok(InnerResult::Conflict);
             };
             effective_writes.insert(*cell, Value::PMap(merged.root));
             merge_node_cells.extend(merged.new_cells);
         }
 
-        // 3: stage effective writes (originals + any merge substitutions).
+        // Stage effective writes (originals + any merge substitutions).
         for (cell, value) in &effective_writes {
             txn.put(encode_key(ns, *cell), rend::serialize::serialize(value))?;
         }
@@ -245,12 +295,10 @@ impl RocksKv {
             )?;
         }
 
-        // 4: commit. Rocks surfaces "another tx wrote to a key we
-        // get_for_update'd" as Busy/TryAgain.
         match txn.commit() {
-            Ok(()) => Ok(CommitResult::Committed),
+            Ok(()) => Ok(InnerResult::Committed),
             Err(e) => match e.kind() {
-                ErrorKind::Busy | ErrorKind::TryAgain => Ok(CommitResult::Conflict),
+                ErrorKind::Busy | ErrorKind::TryAgain => Ok(InnerResult::Retry),
                 _ => Err(e),
             },
         }
