@@ -49,14 +49,18 @@ Environment variables (with defaults):
 
 ## Concurrency model
 
-- Reads (`/query`) take **no locks**. Many concurrent queries against the
-  same org commit no state, so they don't conflict with each other or with
-  concurrent writers (modulo snapshot consistency, which the underlying
-  RocksDB read provides).
-- Writes (`/deploy`, `/tx`) take a **per-org commit mutex**. Commits within
-  one org serialize; cross-org commits run in parallel.
-- The rend runtime's OCC + 3-way merge handles disjoint-subtree concurrent
-  edits inside a single commit (e.g., two indexed writes touching different
+- Reads (`/query`) take **no locks**. Many concurrent queries commit no
+  state, so they don't conflict with each other or with concurrent writers.
+- Writes (`/deploy`, `/tx`) commit through `OptimisticTransactionDB`. The
+  server records every cell read by the rend tx and validates that read
+  set against the live store inside a RocksDB transaction before applying
+  writes. Disjoint-cell commits run fully in parallel — no per-org mutex.
+- On conflict (some cell in the read set was changed concurrently), the
+  server re-executes the rend tx against fresh state, up to 5 times. If
+  contention exceeds that, the response is `409 Conflict` and the client
+  is expected to retry.
+- The rend runtime's 3-way merge still handles disjoint-subtree concurrent
+  edits within a single commit (e.g., two indexed writes touching different
   HAMT subtrees coalesce without conflict).
 
 ## What's not in v1
@@ -69,7 +73,6 @@ Environment variables (with defaults):
 - **Backups.** RocksDB checkpoints / snapshots are the right answer; no
   ergonomic API yet.
 - **Metrics.** Tracing logs only; no Prometheus scrape endpoint yet.
-- **Retry policy on commit conflicts.** Currently the per-org commit
-  mutex serializes writes within an org, so OCC conflicts within the
-  server don't happen. Cross-process / cross-server scenarios would
-  need optimistic-retry — out of scope for single-node v1.
+- **Tunable retry policy.** The 5-attempt cap is fixed in code; a real
+  deployment under heavy contention may want exponential backoff and a
+  configurable ceiling.

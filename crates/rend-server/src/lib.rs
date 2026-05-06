@@ -56,12 +56,17 @@ use axum::{
 use rend::artifact::Artifact;
 use rend::value::Value;
 use rend::Engine;
-use rend_rocksdb::{NamespaceId, RocksKv};
+use rend_rocksdb::{CommitResult, NamespaceId, RocksKv};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+
+/// How many times we re-execute a tx after an OCC conflict before
+/// surfacing a 409 to the caller. In practice contention >5 means
+/// either pathological hot keys or an attack — the caller should
+/// back off, not the server.
+const COMMIT_MAX_ATTEMPTS: usize = 5;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -79,21 +84,11 @@ pub struct ServerState {
 struct Inner {
     kv: RocksKv,
     fuel: u64,
-    /// One mutex per org, lazily created. Held during the commit
-    /// half of a write tx so two write txs against the same org
-    /// serialize. Reads never touch it.
-    org_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl ServerState {
     pub fn new(kv: RocksKv, fuel: u64) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                kv,
-                fuel,
-                org_locks: Mutex::new(HashMap::new()),
-            }),
-        }
+        Self { inner: Arc::new(Inner { kv, fuel }) }
     }
 
     fn ns_for(&self, org: &str) -> NamespaceId {
@@ -109,13 +104,6 @@ impl ServerState {
         // and the cell layer's content-addressed cells are separate
         // from the namespace prefix.
         h128 as u64
-    }
-
-    async fn org_lock(&self, org: &str) -> Arc<Mutex<()>> {
-        let mut map = self.inner.org_locks.lock().await;
-        map.entry(org.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
     }
 }
 
@@ -155,6 +143,8 @@ enum ServerError {
     BadRequest(String),
     #[error("not found")]
     NotFound,
+    #[error("commit failed after {COMMIT_MAX_ATTEMPTS} retries due to OCC conflicts")]
+    CommitConflict,
     #[error("rend error: {0}")]
     Rend(#[from] rend::Error),
     #[error("rocksdb error: {0}")]
@@ -168,6 +158,7 @@ impl IntoResponse for ServerError {
         let (status, msg) = match &self {
             ServerError::BadRequest(s) => (StatusCode::BAD_REQUEST, s.clone()),
             ServerError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
+            ServerError::CommitConflict => (StatusCode::CONFLICT, self.to_string()),
             ServerError::Rend(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
             ServerError::RocksDb(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             ServerError::Other(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -234,25 +225,32 @@ async fn deploy(
     let artifact = read_artifact(&state.inner.kv, ns, &body.hash)?
         .ok_or(ServerError::NotFound)?;
 
-    let lock = state.org_lock(&org).await;
-    let _guard = lock.lock().await;
-
-    let view = state.inner.kv.namespace(ns);
-    let outcome = Engine::new()
-        .deploy(&artifact, rend::Fuel::new(state.inner.fuel), &view)
-        .map_err(ServerError::Rend)?;
-    let Some(outcome) = outcome else {
-        return Ok(Json(DeployResponse {
-            result: serde_json::Value::Null,
-            writes_applied: 0,
-        }));
-    };
-    let n = outcome.writes.len();
-    state.inner.kv.apply(ns, &outcome.writes)?;
-    Ok(Json(DeployResponse {
-        result: value_to_json(&outcome.result),
-        writes_applied: n,
-    }))
+    // Constructor (`fn main`) reads + writes state — full OCC
+    // commit path. Retry on conflict like a regular tx.
+    for _ in 0..COMMIT_MAX_ATTEMPTS {
+        let view = state.inner.kv.namespace(ns);
+        let outcome = Engine::new()
+            .deploy(&artifact, rend::Fuel::new(state.inner.fuel), &view)
+            .map_err(ServerError::Rend)?;
+        let Some(outcome) = outcome else {
+            // Module without a constructor — nothing to commit.
+            return Ok(Json(DeployResponse {
+                result: serde_json::Value::Null,
+                writes_applied: 0,
+            }));
+        };
+        let writes_n = outcome.writes.len();
+        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes)? {
+            CommitResult::Committed => {
+                return Ok(Json(DeployResponse {
+                    result: value_to_json(&outcome.result),
+                    writes_applied: writes_n,
+                }));
+            }
+            CommitResult::Conflict => continue,
+        }
+    }
+    Err(ServerError::CommitConflict)
 }
 
 // ---------- submit tx ----------
@@ -289,25 +287,33 @@ async fn submit_tx(
         .compile_tx(&body.tx_source, &deps)
         .map_err(ServerError::Rend)?;
 
-    let lock = state.org_lock(&org).await;
-    let _guard = lock.lock().await;
-
-    let view = state.inner.kv.namespace(ns);
-    let outcome = Engine::new()
-        .execute_tx(&tx, &deps, rend::Fuel::new(state.inner.fuel), &view)
-        .map_err(ServerError::Rend)?;
-    let n = outcome.writes.len();
-    state.inner.kv.apply(ns, &outcome.writes)?;
-    let events = outcome.events.iter().map(|e| EventRecord {
-        module: e.module.clone(),
-        name: e.name.clone(),
-        args: e.args.iter().map(value_to_json).collect(),
-    }).collect();
-    Ok(Json(TxResponse {
-        result: value_to_json(&outcome.result),
-        writes_applied: n,
-        events,
-    }))
+    // OCC retry loop: re-execute the rend tx if a concurrent
+    // committer wrote to any cell we read. Disjoint-cell txs
+    // commit in parallel — neither's read set overlaps the
+    // other's write set, so neither fires this branch.
+    for _ in 0..COMMIT_MAX_ATTEMPTS {
+        let view = state.inner.kv.namespace(ns);
+        let outcome = Engine::new()
+            .execute_tx(&tx, &deps, rend::Fuel::new(state.inner.fuel), &view)
+            .map_err(ServerError::Rend)?;
+        let writes_n = outcome.writes.len();
+        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes)? {
+            CommitResult::Committed => {
+                let events = outcome.events.iter().map(|e| EventRecord {
+                    module: e.module.clone(),
+                    name: e.name.clone(),
+                    args: e.args.iter().map(value_to_json).collect(),
+                }).collect();
+                return Ok(Json(TxResponse {
+                    result: value_to_json(&outcome.result),
+                    writes_applied: writes_n,
+                    events,
+                }));
+            }
+            CommitResult::Conflict => continue,
+        }
+    }
+    Err(ServerError::CommitConflict)
 }
 
 // ---------- submit query (read-only) ----------
