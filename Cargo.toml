@@ -1,0 +1,17 @@
+[package]
+name = "rend"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "An embeddable, sandboxed, affine-typed programming language."
+
+[dependencies]
+rayon = "1.10"
+
+[lib]
+name = "rend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rend"
+path = "src/bin/rend.rs"

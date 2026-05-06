@@ -1,0 +1,28 @@
+# Rust build output
+/target
+**/*.rs.bk
+
+# Lock file: keep for binaries / final repo, but tooling sometimes
+# regenerates it; if Cargo.lock churn becomes noise, move it here.
+# (kept by default — this is an application repo, not a library-only.)
+
+# IDE / editor cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Per-user environment files (don't commit credentials / RocksDB paths)
+.env
+.env.local
+
+# RocksDB local data dirs (when running the server outside Docker)
+/data
+/var/
+
+# Crash dumps / debug
+*.dSYM
+core.*
