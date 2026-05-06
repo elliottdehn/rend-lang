@@ -844,9 +844,6 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             );
                         }
                     }
-                    // Walk O(log32 N) node cells via Tx — the tree
-                    // is spread across content-addressed cells, so
-                    // a multi-gigabyte pmap never sits in memory.
                     let root_cell = module.state_roots[state_idx as usize];
                     let key_value = self.force_reg(&mut regs, key_reg);
                     let pmap_ty = module.state_types[state_idx as usize].clone();
@@ -854,14 +851,25 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         crate::ast::Type::PMap { key, value } => ((**key).clone(), (**value).clone()),
                         _ => unreachable!("PMapGet on non-pmap state"),
                     };
+                    // Read the root pointer cell (single-cell, may be
+                    // queued lazily — `force` below resolves it).
                     let root_v = self.tx.read_cell(root_cell, &pmap_ty);
                     let root_v = self.tx.force(root_v);
                     let root_hash = match root_v {
                         Value::PMap(h) => h,
                         _ => crate::pmap::EMPTY,
                     };
-                    regs[dst as usize] = crate::pmap::get(root_hash, &key_value, &mut self.tx, &key_ty, &value_ty)
-                        .unwrap_or_else(|| Value::default_for(&value_ty));
+                    // Register a lazy walk; the VM continues with a
+                    // Pending handle in `dst`. The next `force` of any
+                    // value reachable from this handle will drive the
+                    // walk in lockstep with any other walks the VM
+                    // may have queued in the meantime.
+                    regs[dst as usize] = self.tx.begin_pmap_get(
+                        root_hash,
+                        key_value,
+                        key_ty,
+                        value_ty,
+                    );
                 }
                 Instr::PMapPut { state_idx, key_reg, src } => {
                     {

@@ -51,6 +51,14 @@ const COUNTER_MODULE: &str = r#"
     fn main() -> i64 { return 0; }
 "#;
 
+// Note the `transfer` pattern: BOTH reads happen first, BEFORE any
+// assert or write. With pmap walk-level batching (Tx::pending_walks)
+// the runtime sees both walks queued together at the first force
+// point and batches their per-level cell reads in one
+// `Kv::get_many`. The "assert + writes" tail then runs against
+// already-resolved values. Without this read-first ordering the
+// assert's force drains walk 1 alone, then walk 2 runs alone — no
+// batching even with Slice 1's machinery.
 const BANK_MODULE: &str = r#"
     module bank;
     state accounts: pmap<Address, u64>;
@@ -60,10 +68,11 @@ const BANK_MODULE: &str = r#"
         return accounts[to];
     }
     entry fn transfer(from: Address, to: Address, amount: u64) -> u64 {
-        let b = accounts[from];
-        assert(b >= amount, "insufficient");
-        accounts[from] = b - amount;
-        accounts[to] = accounts[to] + amount;
+        let b_from = accounts[from];
+        let b_to   = accounts[to];
+        assert(b_from >= amount, "insufficient");
+        accounts[from] = b_from - amount;
+        accounts[to]   = b_to + amount;
         return accounts[to];
     }
     fn main() -> i64 { return 0; }

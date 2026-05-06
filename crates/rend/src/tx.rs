@@ -88,6 +88,12 @@ pub struct Tx<'a> {
     /// isn't reachable from a live root after a commit can be
     /// reclaimed.
     node_cells_written: std::collections::HashSet<u128>,
+    /// In-flight lazy pmap walks. Drained by `advance_walks` at the
+    /// next force. Independent walks across different pmaps land
+    /// here together when the optimizer's read-hoist pass clusters
+    /// `PMapGet`s, so `advance_walks` can batch their per-level
+    /// cell reads into one `Kv::get_many` round-trip.
+    pending_walks: Vec<PWalk>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +101,32 @@ struct PendingRead {
     id: u64,
     key: u128,
     ty: Type,
+}
+
+/// In-flight pmap lookup. Driven step-by-step by `advance_walks` so
+/// multiple walks across pmaps can have their per-level cell reads
+/// batched into one `Kv::get_many` round-trip.
+#[derive(Debug, Clone)]
+struct PWalk {
+    /// `Value::Pending(handle)` returned to the VM register; resolved
+    /// to the lookup result once the walk is done.
+    handle: u64,
+    key: Value,
+    key_hash: u64,
+    key_ty: Type,
+    val_ty: Type,
+    /// Current HAMT level (0 at the root).
+    level: u32,
+    state: WalkState,
+}
+
+#[derive(Debug, Clone)]
+enum WalkState {
+    /// Need this cell's bytes to advance. The walk is dropped from
+    /// `pending_walks` and its result installed in `resolved` once
+    /// `advance_walks` finishes the descent — there is no "Done"
+    /// variant; finishedness is encoded by absence from the queue.
+    Need { cell: u128 },
 }
 
 impl<'a> Tx<'a> {
@@ -117,6 +149,7 @@ impl<'a> Tx<'a> {
             pmap_types: HashMap::new(),
             pvec_types: HashMap::new(),
             node_cells_written: std::collections::HashSet::new(),
+            pending_walks: Vec::new(),
         }
     }
 
@@ -188,10 +221,22 @@ impl<'a> Tx<'a> {
     /// dicts/struct fields) by flushing any outstanding queued reads
     /// in one `Kv::get_many` and substituting handles with their
     /// concrete values. Idempotent on values without Pending leaves.
+    ///
+    /// Drives both single-cell pending reads (`flush_pending`) and
+    /// in-flight pmap walks (`advance_walks`) until both queues are
+    /// empty. Walks issue per-level cell reads, which themselves go
+    /// through the pending queue — so we loop until no progress is
+    /// possible. The order doesn't matter: each iteration either
+    /// drains pending single-cell reads or advances every walk by
+    /// one HAMT level.
     pub fn force(&mut self, v: Value) -> Value {
         if !contains_pending(&v) { return v; }
-        if !self.pending.is_empty() {
-            self.flush_pending();
+        loop {
+            let had_reads = !self.pending.is_empty();
+            let had_walks = !self.pending_walks.is_empty();
+            if !had_reads && !had_walks { break; }
+            if had_reads { self.flush_pending(); }
+            if had_walks { self.advance_walks(); }
         }
         substitute_resolved(v, &self.resolved)
     }
@@ -402,6 +447,173 @@ impl<'a> Tx<'a> {
             self.pmap_types, self.pvec_types,
             self.node_cells_written,
         )
+    }
+
+    // ---------- lazy pmap walks ----------
+    //
+    // A `PMapGet` instruction registers a walk and returns
+    // `Value::Pending(handle)` rather than synchronously chasing the
+    // HAMT. The walk's per-level cell reads are driven by
+    // `advance_walks`, which is invoked from `force()` whenever
+    // anything tries to consume a Pending value. Multiple in-flight
+    // walks share one `Kv::get_many` round-trip per level, so when
+    // the optimizer hoists adjacent `PMapGet`s into the same cluster
+    // the cost collapses from N×depth sequential reads to depth
+    // batched reads.
+
+    /// Begin a lazy pmap lookup. Returns the handle that will resolve
+    /// to either the found value or the value type's default once the
+    /// walk completes. If the root is empty (no tree), resolves
+    /// immediately to the default — no walk needed.
+    pub fn begin_pmap_get(
+        &mut self,
+        root_hash: u128,
+        key: Value,
+        key_ty: Type,
+        val_ty: Type,
+    ) -> Value {
+        if root_hash == crate::pmap::EMPTY {
+            return Value::default_for(&val_ty);
+        }
+        let key_hash = crate::pmap::hash_for_walk(&key);
+        let handle = self.next_handle;
+        self.next_handle += 1;
+        self.pending_walks.push(PWalk {
+            handle,
+            key,
+            key_hash,
+            key_ty,
+            val_ty,
+            level: 0,
+            state: WalkState::Need { cell: root_hash },
+        });
+        Value::Pending(handle)
+    }
+
+    /// Drive every in-flight walk by one HAMT level. All walks at
+    /// `Need { cell }` contribute their cell key to a single
+    /// `Kv::get_many`; results are decoded; each walk either descends
+    /// to the next level or finishes. Walks that finish are moved out
+    /// of `pending_walks` and their handles installed in `resolved`.
+    fn advance_walks(&mut self) {
+        if self.pending_walks.is_empty() { return; }
+        let walks = std::mem::take(&mut self.pending_walks);
+
+        // Collect (and dedup) the cells we need to fetch from KV.
+        // Cells already in the read/write cache are served inline.
+        // Dedup matters at HAMT level 0 — every walk on the same
+        // pmap shares the root node cell — and at any deeper level
+        // where two keys share a prefix.
+        let mut to_fetch: Vec<u128> = Vec::new();
+        let mut seen: HashMap<u128, usize> = HashMap::new();
+        for w in walks.iter() {
+            let WalkState::Need { cell } = &w.state;
+            if self.writes.contains_key(cell) || self.reads.contains_key(cell) {
+                continue;
+            }
+            seen.entry(*cell).or_insert_with(|| {
+                let idx = to_fetch.len();
+                to_fetch.push(*cell);
+                idx
+            });
+        }
+        let fetched = if to_fetch.is_empty() {
+            Vec::new()
+        } else {
+            self.kv.get_many(&to_fetch)
+        };
+        let mut bytes_by_cell: HashMap<u128, Option<Vec<u8>>> = HashMap::with_capacity(to_fetch.len());
+        for (cell, bz) in to_fetch.into_iter().zip(fetched.into_iter()) {
+            bytes_by_cell.insert(cell, bz);
+        }
+
+        let mut next_round = Vec::new();
+        for mut w in walks.into_iter() {
+            let WalkState::Need { cell } = w.state.clone();
+
+            // Source node bytes for this cell. Three paths:
+            //   1. write set hit  — already-decoded `Value::Bytes(node)`;
+            //                       same shape as `read_node` returns.
+            //   2. read cache hit — same.
+            //   3. fresh fetch    — raw on-disk bytes that still need
+            //                       one `serialize::deserialize` to unwrap
+            //                       the `Value::Bytes` framing the cell
+            //                       stores them in. Records OCC read.
+            let node_bytes: Option<Vec<u8>> =
+                if let Some(v) = self.writes.get(&cell) {
+                    match v { Value::Bytes(b) => Some(b.clone()), _ => None }
+                } else if let Some(v) = self.reads.get(&cell) {
+                    match v { Value::Bytes(b) => Some(b.clone()), _ => None }
+                } else {
+                    let raw = bytes_by_cell.get(&cell).cloned().unwrap_or(None);
+                    let observed = match &raw {
+                        Some(b) => crate::serialize::deserialize(b, &Type::Bytes)
+                            .unwrap_or_else(|| Value::default_for(&Type::Bytes)),
+                        None => Value::default_for(&Type::Bytes),
+                    };
+                    // Record OCC read in the same shape `read_cell`
+                    // would have. Subsequent walks at the same cell
+                    // (level-0 root sharing) will see the cache hit
+                    // above on this loop iteration too.
+                    self.reads.insert(cell, observed.clone());
+                    match observed { Value::Bytes(b) => Some(b), _ => None }
+                };
+
+            match advance_pmap_walk(&mut w, node_bytes) {
+                AdvanceResult::Done(value) => {
+                    self.resolved.insert(w.handle, value);
+                }
+                AdvanceResult::Continue => next_round.push(w),
+            }
+        }
+        self.pending_walks = next_round;
+    }
+}
+
+/// Result of advancing a single walk by one HAMT level.
+enum AdvanceResult {
+    /// Walk finished; `Value` is the lookup result already substituted
+    /// to the value type's default if the key was absent.
+    Done(Value),
+    /// Walk descended to the next level. `walk.state` is updated to
+    /// `Need` for the new cell.
+    Continue,
+}
+
+fn advance_pmap_walk(walk: &mut PWalk, bytes: Option<Vec<u8>>) -> AdvanceResult {
+    let Some(bytes) = bytes else {
+        // Missing cell — well-formed walks shouldn't hit this, but
+        // treat as "not present" for safety.
+        return AdvanceResult::Done(Value::default_for(&walk.val_ty));
+    };
+    let node = match crate::pmap::decode_node(&bytes, &walk.key_ty, &walk.val_ty) {
+        Some(n) => n,
+        None => return AdvanceResult::Done(Value::default_for(&walk.val_ty)),
+    };
+    match node {
+        crate::pmap::Node::Leaf { entries } => {
+            let value = entries.into_iter()
+                .find(|(k, _)| k == &walk.key)
+                .map(|(_, v)| v)
+                .unwrap_or_else(|| Value::default_for(&walk.val_ty));
+            AdvanceResult::Done(value)
+        }
+        crate::pmap::Node::Inner { bitmap, children } => {
+            // Hash bits exhausted — the node should be a Leaf, not an
+            // Inner. Defensive: treat as miss.
+            if walk.level + 1 > crate::pmap::MAX_WALK_LEVELS {
+                return AdvanceResult::Done(Value::default_for(&walk.val_ty));
+            }
+            let slot = crate::pmap::slot_at(walk.key_hash, walk.level);
+            let bit = 1u32 << slot;
+            if bitmap & bit == 0 {
+                return AdvanceResult::Done(Value::default_for(&walk.val_ty));
+            }
+            let idx = (bitmap & (bit - 1)).count_ones() as usize;
+            walk.level += 1;
+            walk.state = WalkState::Need { cell: children[idx] };
+            AdvanceResult::Continue
+        }
     }
 }
 

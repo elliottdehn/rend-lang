@@ -93,6 +93,27 @@ fn node_cell_key(bytes: &[u8]) -> u128 {
 /// from anything `state_root` could produce.
 const NODE_NS: u128 = 0x504D_4150_4E4F_4445_504D_4150_4E4F_4445;
 
+/// Decode raw node bytes. Public so the walk-batcher in `tx.rs` can
+/// decode cells it fetches via the lazy-walk machinery without going
+/// through `read_node` (which would re-fetch).
+pub(crate) fn decode_node(bytes: &[u8], key_ty: &Type, val_ty: &Type) -> Option<Node> {
+    deserialize_node(bytes, key_ty, val_ty)
+}
+
+/// HAMT slot from the key hash at the given level. Public so the
+/// walk-batcher can drive the descent step-by-step.
+pub(crate) fn slot_at(h: u64, level: u32) -> u32 {
+    bits_at(h, level)
+}
+
+/// Public hash function so the walk-batcher can compute the key
+/// hash up front when registering a deferred walk.
+pub(crate) fn hash_for_walk(key: &Value) -> u64 {
+    hash_key(key)
+}
+
+pub(crate) const MAX_WALK_LEVELS: u32 = MAX_LEVELS;
+
 /// Read an existing node from KV. Returns `None` only if the cell is
 /// missing, which (for a non-empty tree) shouldn't happen during a
 /// well-formed walk.
