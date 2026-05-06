@@ -179,8 +179,17 @@ impl RocksKv {
         let mut merge_node_cells: Vec<(u128, Vec<u8>)> = Vec::new();
 
         // 1+2: validate the read set, attempting merge on pmap mismatches.
+        // Cells we're also writing don't need `get_for_update`: RocksDB's
+        // write-side conflict tracking covers them at commit time, AND
+        // we re-validate by hand here. Read-only cells still need watch
+        // tracking — without it a concurrent committer could change the
+        // value between our validate and commit and we'd never know.
         for (cell, expected) in reads {
-            let on_disk = txn.get_for_update(encode_key(ns, *cell), true)?;
+            let on_disk = if writes.contains_key(cell) {
+                txn.get(encode_key(ns, *cell))?
+            } else {
+                txn.get_for_update(encode_key(ns, *cell), true)?
+            };
             if read_matches(&on_disk, expected) {
                 continue;
             }

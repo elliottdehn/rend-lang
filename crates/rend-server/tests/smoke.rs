@@ -171,6 +171,91 @@ async fn orgs_are_namespaced() {
 }
 
 #[tokio::test]
+async fn shared_bank_conserves_balance_under_concurrency() {
+    // Stress test for the OCC merge path's correctness: many
+    // concurrent transfers under one shared EOA, on a small
+    // account pool to maximize collision rate. Final total
+    // balance must equal the initial total. Any silent
+    // overwrite of one tx's commit by another (the data-loss
+    // failure mode of dropping conflict tracking on shared
+    // cells) shows up as a missing balance.
+    let (base, _dir) = spawn_server().await;
+    let cli = Client::new(base);
+
+    let src = r#"
+        module bank;
+        state accounts: pmap<Address, u64>;
+        entry view fn balance(who: Address) -> u64 { return accounts[who]; }
+        entry fn mint(to: Address, amount: u64) -> u64 {
+            accounts[to] = accounts[to] + amount;
+            return accounts[to];
+        }
+        entry fn transfer(from: Address, to: Address, amount: u64) -> u64 {
+            let b_from = accounts[from];
+            let b_to   = accounts[to];
+            assert(b_from >= amount, "insufficient");
+            accounts[from] = b_from - amount;
+            accounts[to]   = b_to + amount;
+            return accounts[to];
+        }
+        fn main() -> i64 { return 0; }
+    "#;
+    let resp = cli.post_value("compile", &serde_json::json!({ "source": src })).await;
+    let hash = resp["hash"].as_str().unwrap().to_string();
+    let _ = cli.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
+
+    // Tiny pool → high collision rate → exercises the merge path.
+    const N_ACCOUNTS: usize = 4;
+    const STARTING_BALANCE: u64 = 10_000;
+    for i in 0..N_ACCOUNTS {
+        cli.post_value("tx", &serde_json::json!({
+            "tx_source": format!(
+                r#"module setup; fn main() -> u64 {{ return bank::mint(address("acc-{i}"), {STARTING_BALANCE}u64); }}"#,
+            ),
+            "deps": [hash],
+        })).await;
+    }
+    let initial_total = STARTING_BALANCE * N_ACCOUNTS as u64;
+
+    // Fire 1000 concurrent transfers from random pairs. With only
+    // 4 accounts, every pair of concurrent transfers has high
+    // probability of touching overlapping accounts — maximizing
+    // the race window between validate and commit.
+    let mut handles = Vec::new();
+    for i in 0..1000u64 {
+        let cli = cli.clone();
+        let hash = hash.clone();
+        handles.push(tokio::spawn(async move {
+            // Deterministic but well-distributed pair selection.
+            let from = (i * 7) % N_ACCOUNTS as u64;
+            let mut to = (i * 13 + 1) % N_ACCOUNTS as u64;
+            if to == from { to = (to + 1) % N_ACCOUNTS as u64; }
+            let tx = format!(
+                r#"module t; fn main() -> u64 {{ return bank::transfer(address("acc-{from}"), address("acc-{to}"), 1u64); }}"#,
+            );
+            cli.post_json("tx", &serde_json::json!({
+                "tx_source": tx, "deps": [hash],
+            })).await.status().is_success()
+        }));
+    }
+    for h in handles { let _ = h.await; }
+
+    // Read every balance, sum them. Must equal initial_total.
+    let mut final_total: u64 = 0;
+    for i in 0..N_ACCOUNTS {
+        let q = format!(
+            r#"module q; view fn main() -> u64 {{ return bank::balance(address("acc-{i}")); }}"#,
+        );
+        let resp = cli.post_value("query", &serde_json::json!({
+            "tx_source": q, "deps": [hash],
+        })).await;
+        final_total += resp["result"].as_u64().unwrap();
+    }
+    assert_eq!(final_total, initial_total,
+        "balance not conserved — {N_ACCOUNTS} accounts went from {initial_total} to {final_total} (commit lost a transfer)");
+}
+
+#[tokio::test]
 async fn parallel_writes_to_disjoint_keys_all_succeed() {
     // The OCC-without-mutex story: 16 concurrent writes to 16
     // distinct pmap keys all commit; none retry, none get
