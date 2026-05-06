@@ -18,11 +18,14 @@ for RocksDB.
 ```sh
 curl http://localhost:8080/healthz
 # → ok
+```
 
-curl -X POST http://localhost:8080/v1/orgs/acme/compile \
-  -H 'content-type: application/json' \
-  -d '{"source": "module hello; fn main() -> i64 { return 42; }"}'
-# → { "hash": "...", "bytes": "...", "modules": ["hello"] }
+Org endpoints require a signed request — see [Auth](#auth) below. The
+fastest way to drive the server is `rend-bench`:
+
+```sh
+cargo run --release -p rend-bench -- \
+  --target http://localhost:8080 --workers 8 --duration 10
 ```
 
 ## Endpoints
@@ -63,11 +66,36 @@ Environment variables (with defaults):
   edits within a single commit (e.g., two indexed writes touching different
   HAMT subtrees coalesce without conflict).
 
+## Auth
+
+Every `/v1/orgs/:org/*` request must be signed by an EOA whose
+recovered address equals the org segment in the URL. There is no
+separate registration step — your private key is your tenant.
+
+Two headers:
+
+| Header | Format |
+|---|---|
+| `X-Rend-Sig` | `0x` + 130 hex chars (65 bytes: r ‖ s ‖ v) |
+| `X-Rend-Nonce` | decimal `u64`, strictly greater than the last accepted nonce for this address |
+
+Signed message (keccak256):
+
+```text
+"REND/v1\n" || method || "\n" || path || "\n" || nonce_be_u64 || "\n" || body
+```
+
+Algorithm: secp256k1 ECDSA recoverable signature; address is the last
+20 bytes of `keccak256(uncompressed_pubkey[1..])` (Ethereum-style).
+
+The server stores the latest accepted nonce per address in a dedicated
+RocksDB column family. Submitting a nonce ≤ stored returns `401`,
+including the case where two clients sharing a key race; the loser
+must re-sign with a fresh nonce. Failed/reverted txs still consume
+the nonce, matching EOA semantics on chains like Ethereum.
+
 ## What's not in v1
 
-- **Auth.** Anyone with network access can hit any org's endpoints. Bring
-  your own reverse proxy (caddy / nginx / Cloudflare) with mTLS or bearer
-  tokens until the first-party auth slice lands.
 - **Replication.** Single-node only. RocksDB's WAL gives durability;
   failure recovery means restoring the volume.
 - **Backups.** RocksDB checkpoints / snapshots are the right answer; no

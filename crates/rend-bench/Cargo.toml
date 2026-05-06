@@ -1,0 +1,19 @@
+[package]
+name = "rend-bench"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Load generator for rend-server: spins up N EOA-authed workers, reports throughput + latency percentiles."
+
+[[bin]]
+name = "rend-bench"
+path = "src/main.rs"
+
+[dependencies]
+rend-server = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }

@@ -37,7 +37,8 @@
 use rend::kv::Kv;
 use rend::value::Value;
 use rocksdb::{
-    ErrorKind, OptimisticTransactionDB, Options, SingleThreaded, WriteBatchWithTransaction,
+    ColumnFamilyDescriptor, ErrorKind, OptimisticTransactionDB, Options, SingleThreaded,
+    WriteBatchWithTransaction,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,6 +48,10 @@ pub type NamespaceId = u64;
 const NAMESPACE_PREFIX_LEN: usize = 8;
 const CELL_KEY_LEN: usize = 16;
 const FULL_KEY_LEN: usize = NAMESPACE_PREFIX_LEN + CELL_KEY_LEN;
+
+/// Column family for per-EOA monotonic auth nonces. Keyed by the
+/// 20-byte recovered address; value is a big-endian u64.
+const NONCES_CF: &str = "nonces";
 
 /// Encode a `(namespace, cell_key)` pair into the on-disk key.
 fn encode_key(ns: NamespaceId, cell: u128) -> [u8; FULL_KEY_LEN] {
@@ -74,6 +79,17 @@ pub enum CommitResult {
     Conflict,
 }
 
+/// Outcome of a single nonce CAS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceResult {
+    /// `submitted` was strictly greater than the stored value;
+    /// the nonce row has been advanced and the request is fresh.
+    Bumped,
+    /// `submitted <= stored`. Replay or out-of-order submission;
+    /// the request must be rejected.
+    TooLow { stored: u64 },
+}
+
 impl RocksKv {
     /// Open or create a RocksDB at `path`. Uses an
     /// `OptimisticTransactionDB` so multi-tx commit conflict
@@ -81,12 +97,14 @@ impl RocksKv {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, rocksdb::Error> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
         // Bigger memtable cuts write amplification on indexed-write
         // workloads (every primary write also touches multiple
         // index cells).
         opts.set_write_buffer_size(64 * 1024 * 1024);
-        let db = OptimisticTransactionDB::open(&opts, path)?;
+        let cfs = vec![ColumnFamilyDescriptor::new(NONCES_CF, Options::default())];
+        let db = OptimisticTransactionDB::open_cf_descriptors(&opts, path, cfs)?;
         Ok(Self { db: Arc::new(db) })
     }
 
@@ -168,6 +186,46 @@ impl RocksKv {
                 ErrorKind::Busy | ErrorKind::TryAgain => Ok(CommitResult::Conflict),
                 _ => Err(e),
             },
+        }
+    }
+
+    /// Atomically advance the auth nonce for `address` to
+    /// `submitted`, requiring `submitted > stored`. Loops on RocksDB
+    /// optimistic-commit conflict (another concurrent CAS for the
+    /// same address); converges after at most a few attempts because
+    /// each retry sees the new state. Caller should treat
+    /// `TooLow { stored }` as a 401 (replay or out-of-order).
+    pub fn bump_nonce(
+        &self,
+        address: &[u8; 20],
+        submitted: u64,
+    ) -> Result<NonceResult, rocksdb::Error> {
+        let cf = self
+            .db
+            .cf_handle(NONCES_CF)
+            .expect("nonces column family was created at open()");
+        loop {
+            let txn = self.db.transaction();
+            let stored = txn
+                .get_for_update_cf(&cf, address.as_slice(), true)?
+                .map(|b| {
+                    let mut buf = [0u8; 8];
+                    let n = b.len().min(8);
+                    buf[..n].copy_from_slice(&b[..n]);
+                    u64::from_be_bytes(buf)
+                })
+                .unwrap_or(0);
+            if submitted <= stored {
+                return Ok(NonceResult::TooLow { stored });
+            }
+            txn.put_cf(&cf, address.as_slice(), submitted.to_be_bytes())?;
+            match txn.commit() {
+                Ok(()) => return Ok(NonceResult::Bumped),
+                Err(e) => match e.kind() {
+                    ErrorKind::Busy | ErrorKind::TryAgain => continue,
+                    _ => return Err(e),
+                },
+            }
         }
     }
 }
@@ -314,6 +372,42 @@ mod tests {
         assert_eq!(
             rend::serialize::deserialize(&bytes, &rend::ast::Type::U64),
             Some(Value::U64(999)),
+        );
+    }
+
+    #[test]
+    fn bump_nonce_accepts_strictly_increasing() {
+        let dir = tempfile::tempdir().unwrap();
+        let kv = RocksKv::open(dir.path()).unwrap();
+        let addr = [0xAA; 20];
+        assert_eq!(kv.bump_nonce(&addr, 1).unwrap(), NonceResult::Bumped);
+        assert_eq!(kv.bump_nonce(&addr, 2).unwrap(), NonceResult::Bumped);
+        // Same nonce twice → reject (replay).
+        assert_eq!(
+            kv.bump_nonce(&addr, 2).unwrap(),
+            NonceResult::TooLow { stored: 2 },
+        );
+        // Older nonce → reject.
+        assert_eq!(
+            kv.bump_nonce(&addr, 1).unwrap(),
+            NonceResult::TooLow { stored: 2 },
+        );
+        // Skip ahead is fine.
+        assert_eq!(kv.bump_nonce(&addr, 100).unwrap(), NonceResult::Bumped);
+    }
+
+    #[test]
+    fn bump_nonce_isolates_addresses() {
+        let dir = tempfile::tempdir().unwrap();
+        let kv = RocksKv::open(dir.path()).unwrap();
+        let a = [1u8; 20];
+        let b = [2u8; 20];
+        assert_eq!(kv.bump_nonce(&a, 5).unwrap(), NonceResult::Bumped);
+        // b's nonce starts at 0 regardless of a's history.
+        assert_eq!(kv.bump_nonce(&b, 1).unwrap(), NonceResult::Bumped);
+        assert_eq!(
+            kv.bump_nonce(&b, 1).unwrap(),
+            NonceResult::TooLow { stored: 1 },
         );
     }
 

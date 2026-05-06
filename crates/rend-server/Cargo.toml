@@ -25,6 +25,9 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+secp256k1 = { workspace = true }
+tiny-keccak = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

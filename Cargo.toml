@@ -4,6 +4,7 @@ members = [
     "crates/rend",
     "crates/rend-rocksdb",
     "crates/rend-server",
+    "crates/rend-bench",
 ]
 
 [workspace.package]
@@ -14,6 +15,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 rend = { path = "crates/rend" }
 rend-rocksdb = { path = "crates/rend-rocksdb" }
+rend-server = { path = "crates/rend-server" }
 
 # Server stack
 axum = { version = "0.7", features = ["macros"] }
@@ -30,3 +32,8 @@ anyhow = "1"
 
 # Storage
 rocksdb = { version = "0.22", default-features = false, features = ["snappy"] }
+
+# Crypto — EOA-style auth
+secp256k1 = { version = "0.29", features = ["recovery", "rand"] }
+tiny-keccak = { version = "2", features = ["keccak"] }
+rand = "0.8"

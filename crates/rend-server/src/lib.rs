@@ -31,10 +31,18 @@
 //!
 //! - Reads (`/query`) take no locks. Many concurrent queries against
 //!   one org commit zero state, so they never conflict.
-//! - Writes (`/deploy`, `/tx`) take a per-org commit mutex. Inside
-//!   the mutex: execute the rend program, validate OCC reads against
-//!   live state, apply writes. Cross-org commits are independent.
-//! - There is no global write lock — orgs commit in parallel.
+//! - Writes (`/deploy`, `/tx`) commit through `OptimisticTransactionDB`.
+//!   The handler re-executes the rend program on conflict, up to
+//!   `COMMIT_MAX_ATTEMPTS` times, then surfaces a 409.
+//! - Disjoint-cell commits in the same org run fully in parallel.
+//!
+//! ## Auth
+//!
+//! All `/v1/orgs/:org/*` requests must carry an EOA-style signature
+//! (`X-Rend-Sig`) and a strictly-increasing per-EOA `X-Rend-Nonce`.
+//! The recovered address must equal the org segment in the URL —
+//! address-as-org, no separate registration. See [`auth`] for the
+//! canonical message format.
 //!
 //! ## Artifacts
 //!
@@ -44,6 +52,8 @@
 //! same content-addressed identity rend's frontend produces — so
 //! "deploy" is effectively "register the bytes + run the
 //! constructor."
+
+pub mod auth;
 
 use anyhow::Context;
 use axum::{
@@ -91,6 +101,13 @@ impl ServerState {
         Self { inner: Arc::new(Inner { kv, fuel }) }
     }
 
+    /// Auth middleware needs direct access to the kv for nonce
+    /// CAS; keep this `pub(crate)` so external code goes through
+    /// the HTTP API.
+    pub(crate) fn kv(&self) -> &RocksKv {
+        &self.inner.kv
+    }
+
     fn ns_for(&self, org: &str) -> NamespaceId {
         // Stable u64 hash of the org name. We don't need
         // cryptographic strength — just disjointness across orgs.
@@ -124,13 +141,23 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 /// for embedding in tests / alternative entry points where the
 /// caller binds its own `TcpListener`.
 pub fn router(state: ServerState) -> Router {
-    Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+    // EOA-authed routes: anything under /v1/orgs/:org/*. The
+    // middleware verifies sig, recovers address, matches it against
+    // :org, and bumps the per-EOA nonce — handlers run only after.
+    let orgs = Router::new()
         .route("/v1/orgs/:org/compile", post(compile))
         .route("/v1/orgs/:org/deploy", post(deploy))
         .route("/v1/orgs/:org/tx", post(submit_tx))
         .route("/v1/orgs/:org/query", post(submit_query))
         .route("/v1/orgs/:org/artifacts/:hash", get(get_artifact))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
+
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .merge(orgs)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }

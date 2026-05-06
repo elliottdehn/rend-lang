@@ -1,12 +1,17 @@
 //! End-to-end smoke test for the HTTP service.
 //!
 //! Boots the server on a random port against a fresh tempdir, then
-//! drives compile → deploy → tx → query through the HTTP API. Any
-//! regression in the wire shape, RocksDB integration, or
-//! per-org-namespace routing breaks this test.
+//! drives compile → deploy → tx → query through the HTTP API. Every
+//! `/v1/orgs/:org/*` request is signed by an `Eoa` whose address
+//! matches `:org`. Any regression in the wire shape, RocksDB
+//! integration, per-org-namespace routing, or auth middleware
+//! breaks this test.
 
 use rend_rocksdb::RocksKv;
+use rend_server::auth::{Eoa, NONCE_HEADER, SIG_HEADER};
 use rend_server::ServerState;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -20,17 +25,69 @@ async fn spawn_server() -> (String, tempfile::TempDir) {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    // Give the listener a moment to settle on slow CI.
     tokio::time::sleep(Duration::from_millis(50)).await;
     (format!("http://{addr}"), dir)
+}
+
+/// A signing HTTP client bound to one EOA. Tracks its own nonce.
+#[derive(Clone)]
+struct Client {
+    base: String,
+    http: reqwest::Client,
+    wallet: Arc<Eoa>,
+    next_nonce: Arc<AtomicU64>,
+}
+
+impl Client {
+    fn new(base: String) -> Self {
+        Self {
+            base,
+            http: reqwest::Client::new(),
+            wallet: Arc::new(Eoa::new()),
+            next_nonce: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    fn org(&self) -> String { self.wallet.address_hex() }
+
+    /// Sign and send a JSON POST. The path is appended to the org
+    /// segment, e.g. `path_after_org = "tx"` → `/v1/orgs/<addr>/tx`.
+    async fn post_json(
+        &self,
+        path_after_org: &str,
+        body: &serde_json::Value,
+    ) -> reqwest::Response {
+        let nonce = self.next_nonce.fetch_add(1, Ordering::SeqCst);
+        let path = format!("/v1/orgs/{}/{}", self.org(), path_after_org);
+        let body_bytes = serde_json::to_vec(body).unwrap();
+        let sig = self.wallet.sign("POST", &path, nonce, &body_bytes);
+        self.http
+            .post(format!("{}{}", self.base, path))
+            .header(SIG_HEADER, format!("0x{}", hex::encode(sig)))
+            .header(NONCE_HEADER, nonce.to_string())
+            .header("content-type", "application/json")
+            .body(body_bytes)
+            .send().await.unwrap()
+    }
+
+    async fn post_value(
+        &self,
+        path_after_org: &str,
+        body: &serde_json::Value,
+    ) -> serde_json::Value {
+        let resp = self.post_json(path_after_org, body).await;
+        let status = resp.status();
+        let text = resp.text().await.unwrap();
+        assert!(status.is_success(), "request failed [{status}]: {text}");
+        serde_json::from_str(&text).unwrap()
+    }
 }
 
 #[tokio::test]
 async fn deploy_then_query_round_trip() {
     let (base, _dir) = spawn_server().await;
-    let client = reqwest::Client::new();
+    let cli = Client::new(base);
 
-    // 1. Compile a tiny module.
     let src = r#"
         module counter;
         state ctr: i64;
@@ -41,61 +98,41 @@ async fn deploy_then_query_round_trip() {
         }
         fn main() -> i64 { return 0; }
     "#;
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/compile"))
-        .json(&serde_json::json!({ "source": src }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    let resp = cli.post_value("compile", &serde_json::json!({ "source": src })).await;
     let hash = resp["hash"].as_str().unwrap().to_string();
     assert_eq!(resp["modules"], serde_json::json!(["counter"]));
 
-    // 2. Deploy — runs the (empty) constructor.
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/deploy"))
-        .json(&serde_json::json!({ "hash": hash }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    let resp = cli.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
     assert_eq!(resp["result"], serde_json::json!(0));
 
-    // 3. Tx that bumps the counter twice.
-    let bump_src = format!(r#"
+    let bump_src = r#"
         module bump;
-        fn main() -> i64 {{
+        fn main() -> i64 {
             counter::bump();
             return counter::bump();
-        }}
-    "#);
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/tx"))
-        .json(&serde_json::json!({
-            "tx_source": bump_src,
-            "deps": [hash],
-        }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+        }
+    "#;
+    let resp = cli.post_value("tx", &serde_json::json!({
+        "tx_source": bump_src,
+        "deps": [hash],
+    })).await;
     assert_eq!(resp["result"], serde_json::json!(2));
     assert!(resp["writes_applied"].as_u64().unwrap() > 0);
 
-    // 4. Query — read-only path returns the current count.
-    let q = r#"
-        module q;
-        view fn main() -> i64 { return counter::current(); }
-    "#;
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/query"))
-        .json(&serde_json::json!({
-            "tx_source": q,
-            "deps": [hash],
-        }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    let q = "module q; view fn main() -> i64 { return counter::current(); }";
+    let resp = cli.post_value("query", &serde_json::json!({
+        "tx_source": q,
+        "deps": [hash],
+    })).await;
     assert_eq!(resp["result"], serde_json::json!(2));
 }
 
 #[tokio::test]
 async fn orgs_are_namespaced() {
     let (base, _dir) = spawn_server().await;
-    let client = reqwest::Client::new();
+    let acme = Client::new(base.clone());
+    let globex = Client::new(base);
+
     let src = r#"
         module store;
         state v: i64;
@@ -104,68 +141,41 @@ async fn orgs_are_namespaced() {
         fn main() -> i64 { return 0; }
     "#;
 
-    // Deploy under "acme" and "globex" with the same source — same
-    // hash, but each org's state cells are disjoint.
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/compile"))
-        .json(&serde_json::json!({ "source": src }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    // Each org compiles + deploys the same source. Even though the
+    // hash is identical, state cells are disjoint per namespace.
+    let resp = acme.post_value("compile", &serde_json::json!({ "source": src })).await;
     let hash = resp["hash"].as_str().unwrap().to_string();
+    let _ = globex.post_value("compile", &serde_json::json!({ "source": src })).await;
+    let _ = acme.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
+    let _ = globex.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
 
-    let _ = client
-        .post(format!("{base}/v1/orgs/globex/compile"))
-        .json(&serde_json::json!({ "source": src }))
-        .send().await.unwrap();
+    let _ = acme.post_value("tx", &serde_json::json!({
+        "tx_source": "module t; fn main() -> i64 { return store::write(11); }",
+        "deps": [hash],
+    })).await;
+    let _ = globex.post_value("tx", &serde_json::json!({
+        "tx_source": "module t; fn main() -> i64 { return store::write(22); }",
+        "deps": [hash],
+    })).await;
 
-    for org in ["acme", "globex"] {
-        let _ = client
-            .post(format!("{base}/v1/orgs/{org}/deploy"))
-            .json(&serde_json::json!({ "hash": hash }))
-            .send().await.unwrap();
-    }
-
-    // acme writes 11; globex writes 22. Both reads see only their
-    // own org's value.
-    let _ = client
-        .post(format!("{base}/v1/orgs/acme/tx"))
-        .json(&serde_json::json!({
-            "tx_source": "module t; fn main() -> i64 { return store::write(11); }",
+    for (cli, expected) in [(&acme, 11), (&globex, 22)] {
+        let resp = cli.post_value("query", &serde_json::json!({
+            "tx_source": "module q; view fn main() -> i64 { return store::read(); }",
             "deps": [hash],
-        }))
-        .send().await.unwrap();
-    let _ = client
-        .post(format!("{base}/v1/orgs/globex/tx"))
-        .json(&serde_json::json!({
-            "tx_source": "module t; fn main() -> i64 { return store::write(22); }",
-            "deps": [hash],
-        }))
-        .send().await.unwrap();
-
-    for (org, expected) in [("acme", 11), ("globex", 22)] {
-        let resp: serde_json::Value = client
-            .post(format!("{base}/v1/orgs/{org}/query"))
-            .json(&serde_json::json!({
-                "tx_source": "module q; view fn main() -> i64 { return store::read(); }",
-                "deps": [hash],
-            }))
-            .send().await.unwrap()
-            .json().await.unwrap();
+        })).await;
         assert_eq!(resp["result"], serde_json::json!(expected),
-            "org {org} should see its own value");
+            "{} should see {expected}", cli.org());
     }
 }
 
 #[tokio::test]
 async fn parallel_writes_to_disjoint_keys_all_succeed() {
-    // The key reason we dropped the per-org write mutex. With
-    // proper OCC, N concurrent writes to N disjoint pmap keys all
-    // commit — none retry, none get serialized. Writers contend
-    // on RocksDB only when their read sets actually overlap.
+    // The OCC-without-mutex story: 16 concurrent writes to 16
+    // distinct pmap keys all commit; none retry, none get
+    // serialized.
     let (base, _dir) = spawn_server().await;
-    let client = reqwest::Client::new();
+    let cli = Client::new(base);
 
-    // Module: a pmap of u64→u64. Each tx writes a distinct key.
     let src = r#"
         module bag;
         state items: pmap<u64, u64>;
@@ -176,101 +186,69 @@ async fn parallel_writes_to_disjoint_keys_all_succeed() {
         }
         fn main() -> i64 { return 0; }
     "#;
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/compile"))
-        .json(&serde_json::json!({ "source": src }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    let resp = cli.post_value("compile", &serde_json::json!({ "source": src })).await;
     let hash = resp["hash"].as_str().unwrap().to_string();
-    let _ = client
-        .post(format!("{base}/v1/orgs/acme/deploy"))
-        .json(&serde_json::json!({ "hash": hash }))
-        .send().await.unwrap();
+    let _ = cli.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
 
-    // Fan out 16 concurrent writers each touching a different key.
     let mut handles = Vec::new();
     for i in 0..16u64 {
-        let client = client.clone();
-        let base = base.clone();
+        let cli = cli.clone();
         let hash = hash.clone();
         handles.push(tokio::spawn(async move {
             let tx = format!(
                 "module t; fn main() -> u64 {{ return bag::write({i}u64, {}u64); }}",
                 i * 100,
             );
-            let resp = client
-                .post(format!("{base}/v1/orgs/acme/tx"))
-                .json(&serde_json::json!({
-                    "tx_source": tx,
-                    "deps": [hash],
-                }))
-                .send().await.unwrap();
-            assert!(resp.status().is_success(), "writer {i} failed: {}",
-                resp.text().await.unwrap_or_default());
+            let resp = cli.post_json("tx", &serde_json::json!({
+                "tx_source": tx,
+                "deps": [hash],
+            })).await;
+            assert!(resp.status().is_success(), "writer {i} failed");
         }));
     }
     for h in handles { h.await.unwrap(); }
 
-    // Every key should hold its expected value.
     for i in 0..16u64 {
         let q = format!(
             "module q; view fn main() -> u64 {{ return bag::read({i}u64); }}",
         );
-        let resp: serde_json::Value = client
-            .post(format!("{base}/v1/orgs/acme/query"))
-            .json(&serde_json::json!({ "tx_source": q, "deps": [hash] }))
-            .send().await.unwrap()
-            .json().await.unwrap();
-        assert_eq!(resp["result"], serde_json::json!(i * 100),
-            "key {i} should be set to {}", i * 100);
+        let resp = cli.post_value("query", &serde_json::json!({
+            "tx_source": q, "deps": [hash],
+        })).await;
+        assert_eq!(resp["result"], serde_json::json!(i * 100));
     }
 }
 
 #[tokio::test]
 async fn parallel_writes_to_same_key_serialize() {
-    // The other side of the OCC story: if N writers all read the
-    // same counter cell and increment, they don't all silently win
-    // (the lost-update bug the mutex was masking). Rend's OCC +
-    // RocksDB's optimistic conflict detection make them retry, and
-    // the final value reflects every increment.
+    // Lost-update protection: many bumps of one counter add up.
     let (base, _dir) = spawn_server().await;
-    let client = reqwest::Client::new();
+    let cli = Client::new(base);
 
     let src = r#"
         module ctr;
         state n: u64;
         entry view fn current() -> u64 { return n; }
-        entry fn bump() -> u64 {
-            n = n + 1u64;
-            return n;
-        }
+        entry fn bump() -> u64 { n = n + 1u64; return n; }
         fn main() -> i64 { return 0; }
     "#;
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/compile"))
-        .json(&serde_json::json!({ "source": src }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    let resp = cli.post_value("compile", &serde_json::json!({ "source": src })).await;
     let hash = resp["hash"].as_str().unwrap().to_string();
-    let _ = client
-        .post(format!("{base}/v1/orgs/acme/deploy"))
-        .json(&serde_json::json!({ "hash": hash }))
-        .send().await.unwrap();
+    let _ = cli.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
 
-    // 8 concurrent bumps. All read+write the same cell, so most
-    // race and retry; the server's COMMIT_MAX_ATTEMPTS is 5 which
-    // is enough for 8 contenders.
+    // Spawning N concurrent tasks against the SAME EOA means N
+    // pre-allocated nonces; some will retry-loop on OCC commit
+    // conflict for the counter cell. The auth middleware bumps
+    // nonces serially regardless, so each task burns one nonce.
     let mut handles = Vec::new();
     for _ in 0..8 {
-        let client = client.clone();
-        let base = base.clone();
+        let cli = cli.clone();
         let hash = hash.clone();
         handles.push(tokio::spawn(async move {
             let tx = "module t; fn main() -> u64 { return ctr::bump(); }";
-            let resp = client
-                .post(format!("{base}/v1/orgs/acme/tx"))
-                .json(&serde_json::json!({ "tx_source": tx, "deps": [hash] }))
-                .send().await.unwrap();
+            let resp = cli.post_json("tx", &serde_json::json!({
+                "tx_source": tx, "deps": [hash],
+            })).await;
             resp.status().is_success()
         }));
     }
@@ -278,24 +256,19 @@ async fn parallel_writes_to_same_key_serialize() {
     for h in handles {
         if h.await.unwrap() { succeeded += 1; }
     }
-    // Most should succeed; some may exhaust retries under heavy
-    // contention. Final counter equals successful-commit count.
     assert!(succeeded >= 4, "at least half the bumps should succeed, got {succeeded}");
 
     let q = "module q; view fn main() -> u64 { return ctr::current(); }";
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/query"))
-        .json(&serde_json::json!({ "tx_source": q, "deps": [hash] }))
-        .send().await.unwrap()
-        .json().await.unwrap();
-    assert_eq!(resp["result"], serde_json::json!(succeeded),
-        "counter must equal number of successful bumps");
+    let resp = cli.post_value("query", &serde_json::json!({
+        "tx_source": q, "deps": [hash],
+    })).await;
+    assert_eq!(resp["result"], serde_json::json!(succeeded));
 }
 
 #[tokio::test]
 async fn query_rejects_writing_main() {
     let (base, _dir) = spawn_server().await;
-    let client = reqwest::Client::new();
+    let cli = Client::new(base);
 
     let src = r#"
         module store;
@@ -303,26 +276,108 @@ async fn query_rejects_writing_main() {
         entry fn touch() -> i64 { v = v + 1; return v; }
         fn main() -> i64 { return 0; }
     "#;
-    let resp: serde_json::Value = client
-        .post(format!("{base}/v1/orgs/acme/compile"))
-        .json(&serde_json::json!({ "source": src }))
-        .send().await.unwrap()
-        .json().await.unwrap();
+    let resp = cli.post_value("compile", &serde_json::json!({ "source": src })).await;
     let hash = resp["hash"].as_str().unwrap().to_string();
-    let _ = client
-        .post(format!("{base}/v1/orgs/acme/deploy"))
-        .json(&serde_json::json!({ "hash": hash }))
-        .send().await.unwrap();
+    let _ = cli.post_value("deploy", &serde_json::json!({ "hash": hash })).await;
 
-    // A non-`view` main on the query path should be rejected by the
-    // engine before any writes happen.
-    let resp = client
-        .post(format!("{base}/v1/orgs/acme/query"))
-        .json(&serde_json::json!({
-            "tx_source": "module q; fn main() -> i64 { return store::touch(); }",
-            "deps": [hash],
-        }))
-        .send().await.unwrap();
+    let resp = cli.post_json("query", &serde_json::json!({
+        "tx_source": "module q; fn main() -> i64 { return store::touch(); }",
+        "deps": [hash],
+    })).await;
     assert!(!resp.status().is_success(),
         "non-view main on /query must be rejected");
+}
+
+#[tokio::test]
+async fn unauthed_request_is_rejected() {
+    let (base, _dir) = spawn_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/orgs/0xabc/compile"))
+        .json(&serde_json::json!({ "source": "module x; fn main() -> i64 { return 0; }" }))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn wrong_org_in_path_is_rejected() {
+    // Sign with one EOA but route the request at a different :org.
+    // Recovery succeeds but the address won't match the path → 401.
+    let (base, _dir) = spawn_server().await;
+    let wallet = Eoa::new();
+    let other_org = "0x0000000000000000000000000000000000000001";
+    let path = format!("/v1/orgs/{other_org}/compile");
+    let body = serde_json::json!({ "source": "module x; fn main() -> i64 { return 0; }" });
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let sig = wallet.sign("POST", &path, 1, &body_bytes);
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}{path}"))
+        .header(SIG_HEADER, format!("0x{}", hex::encode(sig)))
+        .header(NONCE_HEADER, "1")
+        .header("content-type", "application/json")
+        .body(body_bytes)
+        .send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn replayed_nonce_is_rejected() {
+    // Sign the SAME request twice — first succeeds, second 401s.
+    let (base, _dir) = spawn_server().await;
+    let wallet = Eoa::new();
+    let path = format!("/v1/orgs/{}/compile", wallet.address_hex());
+    let body = serde_json::json!({ "source": "module x; fn main() -> i64 { return 0; }" });
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let sig = wallet.sign("POST", &path, 42, &body_bytes);
+
+    let send = || {
+        let body_bytes = body_bytes.clone();
+        let sig = sig;
+        let path = path.clone();
+        let base = base.clone();
+        async move {
+            reqwest::Client::new()
+                .post(format!("{base}{path}"))
+                .header(SIG_HEADER, format!("0x{}", hex::encode(sig)))
+                .header(NONCE_HEADER, "42")
+                .header("content-type", "application/json")
+                .body(body_bytes)
+                .send().await.unwrap()
+        }
+    };
+
+    let first = send().await;
+    assert!(first.status().is_success(), "first request should succeed");
+    let second = send().await;
+    assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED,
+        "replay must be rejected");
+}
+
+#[tokio::test]
+async fn nonce_must_be_strictly_increasing() {
+    let (base, _dir) = spawn_server().await;
+    let wallet = Eoa::new();
+    let org = wallet.address_hex();
+    let post = |nonce: u64| {
+        let body = serde_json::json!({ "source": "module x; fn main() -> i64 { return 0; }" });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let path = format!("/v1/orgs/{org}/compile");
+        let sig = wallet.sign("POST", &path, nonce, &body_bytes);
+        let base = base.clone();
+        async move {
+            reqwest::Client::new()
+                .post(format!("{base}{path}"))
+                .header(SIG_HEADER, format!("0x{}", hex::encode(sig)))
+                .header(NONCE_HEADER, nonce.to_string())
+                .header("content-type", "application/json")
+                .body(body_bytes)
+                .send().await.unwrap()
+        }
+    };
+
+    assert!(post(10).await.status().is_success());
+    assert_eq!(post(9).await.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(post(10).await.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(post(11).await.status().is_success());
+    assert!(post(1000).await.status().is_success());
 }
