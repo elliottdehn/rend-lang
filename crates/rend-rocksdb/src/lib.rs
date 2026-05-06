@@ -38,8 +38,8 @@ use rend::ast::Type;
 use rend::kv::Kv;
 use rend::value::Value;
 use rocksdb::{
-    ColumnFamilyDescriptor, ErrorKind, OptimisticTransactionDB, Options, SingleThreaded,
-    WriteBatchWithTransaction,
+    ColumnFamilyDescriptor, ErrorKind, OptimisticTransactionDB, OptimisticTransactionOptions,
+    Options, SingleThreaded, WriteBatchWithTransaction, WriteOptions,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,6 +66,26 @@ fn encode_key(ns: NamespaceId, cell: u128) -> [u8; FULL_KEY_LEN] {
 #[derive(Clone)]
 pub struct RocksKv {
     db: Arc<OptimisticTransactionDB<SingleThreaded>>,
+    /// Optional fine-grained timing breakdown of `commit_with_occ`'s
+    /// internal phases. Off by default (zero overhead). Toggled on
+    /// for profiling runs.
+    pub timings: Arc<CommitTimings>,
+    /// Whether to skip the WAL on tx commit. False = standard
+    /// durable behavior (each commit fsyncs the WAL). True = trade
+    /// last-few-ms-of-writes durability for ~10× faster commits;
+    /// state still survives clean shutdown via the memtable+SST
+    /// flush path. Set via `RocksKv::open_with` /
+    /// `RocksKv::set_durability`.
+    durable: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Atomic ns counters for the inner commit pipeline.
+#[derive(Default)]
+pub struct CommitTimings {
+    pub validate_ns: std::sync::atomic::AtomicU64,
+    pub stage_writes_ns: std::sync::atomic::AtomicU64,
+    pub txn_commit_ns: std::sync::atomic::AtomicU64,
+    pub commits: std::sync::atomic::AtomicU64,
 }
 
 /// Outcome of an OCC-validated commit.
@@ -103,6 +123,17 @@ pub enum NonceResult {
 }
 
 impl RocksKv {
+    /// Toggle durable commits at runtime. `true` (default) → each
+    /// commit syncs the WAL. `false` → commits skip the WAL,
+    /// landing only in the memtable until the next SST flush. The
+    /// fast mode is fine for benchmarking and for deployments that
+    /// can replay the last few seconds of work from an external
+    /// log on crash; do not enable on a node where on-disk
+    /// durability of every commit is a hard requirement.
+    pub fn set_durable(&self, durable: bool) {
+        self.durable.store(durable, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Open or create a RocksDB at `path`. Uses an
     /// `OptimisticTransactionDB` so multi-tx commit conflict
     /// detection is built in.
@@ -117,7 +148,11 @@ impl RocksKv {
         opts.set_write_buffer_size(64 * 1024 * 1024);
         let cfs = vec![ColumnFamilyDescriptor::new(NONCES_CF, Options::default())];
         let db = OptimisticTransactionDB::open_cf_descriptors(&opts, path, cfs)?;
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self {
+            db: Arc::new(db),
+            timings: Arc::new(CommitTimings::default()),
+            durable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        })
     }
 
     /// Build a per-tx Kv view scoped to one namespace. The view is
@@ -223,10 +258,19 @@ impl RocksKv {
         writes: &HashMap<u128, Value>,
         pmap_types: &HashMap<u128, (Type, Type)>,
     ) -> Result<InnerResult, rocksdb::Error> {
-        let txn = self.db.transaction();
+        use std::sync::atomic::Ordering;
+        // Build a fresh write-options every commit. Cheap (it's
+        // basically two booleans) and lets `set_durable` flip
+        // behavior at runtime without re-opening the DB.
+        let mut wo = WriteOptions::default();
+        if !self.durable.load(Ordering::Relaxed) {
+            wo.disable_wal(true);
+        }
+        let txn = self.db.transaction_opt(&wo, &OptimisticTransactionOptions::default());
 
         let mut effective_writes: HashMap<u128, Value> = writes.clone();
         let mut merge_node_cells: Vec<(u128, Vec<u8>)> = Vec::new();
+        let validate_t0 = std::time::Instant::now();
 
         // Validate the read set, attempting merge on pmap mismatches.
         // Cells we're also writing don't need `get_for_update`: RocksDB's
@@ -280,28 +324,35 @@ impl RocksKv {
             effective_writes.insert(*cell, Value::PMap(merged.root));
             merge_node_cells.extend(merged.new_cells);
         }
+        self.timings.validate_ns.fetch_add(
+            validate_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // Stage effective writes (originals + any merge substitutions).
+        let stage_t0 = std::time::Instant::now();
         for (cell, value) in &effective_writes {
             txn.put(encode_key(ns, *cell), rend::serialize::serialize(value))?;
         }
-        // Newly synthesized HAMT node cells from a merge — store
-        // wrapped as Value::Bytes so reads via Tx::read_cell decode
-        // the raw bytes the same way they decode any node cell.
         for (cell, bytes) in merge_node_cells {
             txn.put(
                 encode_key(ns, cell),
                 rend::serialize::serialize(&Value::Bytes(bytes)),
             )?;
         }
+        self.timings.stage_writes_ns.fetch_add(
+            stage_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        match txn.commit() {
+        let commit_t0 = std::time::Instant::now();
+        let res = match txn.commit() {
             Ok(()) => Ok(InnerResult::Committed),
             Err(e) => match e.kind() {
                 ErrorKind::Busy | ErrorKind::TryAgain => Ok(InnerResult::Retry),
                 _ => Err(e),
             },
-        }
+        };
+        self.timings.txn_commit_ns.fetch_add(
+            commit_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.timings.commits.fetch_add(1, Ordering::Relaxed);
+        res
     }
 
     /// Atomically advance the auth nonce for `address` to

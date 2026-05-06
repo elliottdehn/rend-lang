@@ -151,14 +151,19 @@ impl ServerState {
 }
 
 pub async fn serve(config: Config) -> anyhow::Result<()> {
+    serve_with(config, true).await
+}
+
+pub async fn serve_with(config: Config, durable: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(&config.data_dir)
         .with_context(|| format!("creating data dir {:?}", config.data_dir))?;
     let kv = RocksKv::open(&config.data_dir)
         .with_context(|| format!("opening RocksDB at {:?}", config.data_dir))?;
+    kv.set_durable(durable);
     let state = ServerState::new(kv, config.fuel);
 
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
-    tracing::info!(listen = %config.listen, "rend-server up");
+    tracing::info!(listen = %config.listen, durable = durable, "rend-server up");
     axum::serve(listener, router(state)).await?;
     Ok(())
 }
@@ -206,6 +211,16 @@ async fn stats_handler(State(state): State<ServerState>) -> Json<serde_json::Val
     let pct = |part: u64| -> f64 {
         if total_ns == 0 { 0.0 } else { (part as f64) / (total_ns as f64) * 100.0 }
     };
+
+    // Per-attempt commit-pipeline breakdown. These count every
+    // try_commit_once invocation, including failed ones, so they
+    // describe per-attempt cost rather than per-successful-tx.
+    let kt = &state.kv().timings;
+    let attempts = kt.commits.load(Ordering::Relaxed);
+    let attempt_div = |ns: u64| -> u64 {
+        if attempts == 0 { 0 } else { ns / attempts }
+    };
+
     Json(serde_json::json!({
         "count": count,
         "retries": s.retries.load(Ordering::Relaxed),
@@ -224,6 +239,12 @@ async fn stats_handler(State(state): State<ServerState>) -> Json<serde_json::Val
             "commit":        pct(commit),
             "other":         pct(other),
         },
+        "commit_pipeline": {
+            "attempts":      attempts,
+            "validate_ns":   attempt_div(kt.validate_ns.load(Ordering::Relaxed)),
+            "stage_writes_ns": attempt_div(kt.stage_writes_ns.load(Ordering::Relaxed)),
+            "txn_commit_ns": attempt_div(kt.txn_commit_ns.load(Ordering::Relaxed)),
+        },
     }))
 }
 
@@ -236,6 +257,11 @@ async fn stats_reset_handler(State(state): State<ServerState>) -> Json<serde_jso
     s.execute_tx_ns.store(0, Ordering::Relaxed);
     s.commit_ns.store(0, Ordering::Relaxed);
     s.retries.store(0, Ordering::Relaxed);
+    let kt = &state.kv().timings;
+    kt.commits.store(0, Ordering::Relaxed);
+    kt.validate_ns.store(0, Ordering::Relaxed);
+    kt.stage_writes_ns.store(0, Ordering::Relaxed);
+    kt.txn_commit_ns.store(0, Ordering::Relaxed);
     Json(serde_json::json!({ "ok": true }))
 }
 

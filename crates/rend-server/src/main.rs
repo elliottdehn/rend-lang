@@ -27,5 +27,13 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(2_000_000),
     };
 
-    rend_server::serve(config).await
+    // Optional env opt-in to fast-but-non-WAL-durable commits.
+    // Off by default so production deployments stay safe; turn on
+    // for benchmarks or for deployments that replay last-few-ms-of-
+    // writes from an external log on crash.
+    let durable = std::env::var("REND_DURABLE_COMMITS")
+        .map(|s| s != "0" && s.to_ascii_lowercase() != "false")
+        .unwrap_or(true);
+
+    rend_server::serve_with(config, durable).await
 }
