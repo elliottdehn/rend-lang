@@ -64,6 +64,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use rend::artifact::Artifact;
 use rend::value::Value;
 use rend::Engine;
@@ -95,11 +97,34 @@ pub struct ServerState {
 struct Inner {
     kv: RocksKv,
     fuel: u64,
+    stats: TxStats,
+}
+
+/// Per-stage timing counters, aggregated across all tx handler
+/// invocations. Read once at server shutdown (or on demand via
+/// `/admin/stats`) to see where the per-tx hot path spends its
+/// time. Each stage's `total_ns` divided by `count` gives the
+/// mean per-stage cost; subtracting the named stages from `total_ns`
+/// yields "everything else" (frame parse, response serialization,
+/// dispatch overhead, etc).
+#[derive(Default)]
+pub struct TxStats {
+    pub count: AtomicU64,
+    pub total_ns: AtomicU64,
+    pub resolve_deps_ns: AtomicU64,
+    pub compile_tx_ns: AtomicU64,
+    pub execute_tx_ns: AtomicU64,
+    pub commit_ns: AtomicU64,
+    pub retries: AtomicU64,
 }
 
 impl ServerState {
     pub fn new(kv: RocksKv, fuel: u64) -> Self {
-        Self { inner: Arc::new(Inner { kv, fuel }) }
+        Self { inner: Arc::new(Inner { kv, fuel, stats: TxStats::default() }) }
+    }
+
+    pub fn stats(&self) -> &TxStats {
+        &self.inner.stats
     }
 
     /// Auth middleware needs direct access to the kv for nonce
@@ -159,9 +184,59 @@ pub fn router(state: ServerState) -> Router {
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/admin/stats", get(stats_handler))
+        .route("/admin/stats/reset", post(stats_reset_handler))
         .merge(orgs)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn stats_handler(State(state): State<ServerState>) -> Json<serde_json::Value> {
+    let s = state.stats();
+    let count = s.count.load(Ordering::Relaxed);
+    let div = |ns: u64| -> u64 {
+        if count == 0 { 0 } else { ns / count }
+    };
+    let total_ns = s.total_ns.load(Ordering::Relaxed);
+    let resolve = s.resolve_deps_ns.load(Ordering::Relaxed);
+    let compile = s.compile_tx_ns.load(Ordering::Relaxed);
+    let exec = s.execute_tx_ns.load(Ordering::Relaxed);
+    let commit = s.commit_ns.load(Ordering::Relaxed);
+    let other = total_ns.saturating_sub(resolve + compile + exec + commit);
+    let pct = |part: u64| -> f64 {
+        if total_ns == 0 { 0.0 } else { (part as f64) / (total_ns as f64) * 100.0 }
+    };
+    Json(serde_json::json!({
+        "count": count,
+        "retries": s.retries.load(Ordering::Relaxed),
+        "mean_ns": {
+            "total":         div(total_ns),
+            "resolve_deps":  div(resolve),
+            "compile_tx":    div(compile),
+            "execute_tx":    div(exec),
+            "commit":        div(commit),
+            "other":         div(other),
+        },
+        "share_pct": {
+            "resolve_deps":  pct(resolve),
+            "compile_tx":    pct(compile),
+            "execute_tx":    pct(exec),
+            "commit":        pct(commit),
+            "other":         pct(other),
+        },
+    }))
+}
+
+async fn stats_reset_handler(State(state): State<ServerState>) -> Json<serde_json::Value> {
+    let s = state.stats();
+    s.count.store(0, Ordering::Relaxed);
+    s.total_ns.store(0, Ordering::Relaxed);
+    s.resolve_deps_ns.store(0, Ordering::Relaxed);
+    s.compile_tx_ns.store(0, Ordering::Relaxed);
+    s.execute_tx_ns.store(0, Ordering::Relaxed);
+    s.commit_ns.store(0, Ordering::Relaxed);
+    s.retries.store(0, Ordering::Relaxed);
+    Json(serde_json::json!({ "ok": true }))
 }
 
 // ---------- error type ----------
@@ -329,23 +404,46 @@ pub(crate) fn do_tx(
     ns: NamespaceId,
     body: TxBody,
 ) -> ServerResult<TxResponse> {
+    let stats = &state.inner.stats;
+    let total_t0 = Instant::now();
+
+    let t = Instant::now();
     let deps = resolve_deps(&state.inner.kv, ns, &body.deps)?;
+    stats.resolve_deps_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    let t = Instant::now();
     let tx = Engine::new()
         .compile_tx(&body.tx_source, &deps)
         .map_err(ServerError::Rend)?;
-    for _ in 0..COMMIT_MAX_ATTEMPTS {
+    stats.compile_tx_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    for attempt in 0..COMMIT_MAX_ATTEMPTS {
+        if attempt > 0 {
+            stats.retries.fetch_add(1, Ordering::Relaxed);
+        }
         let view = state.inner.kv.namespace(ns);
+        let t = Instant::now();
         let outcome = Engine::new()
             .execute_tx(&tx, &deps, rend::Fuel::new(state.inner.fuel), &view)
             .map_err(ServerError::Rend)?;
+        stats.execute_tx_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
         let writes_n = outcome.writes.len();
-        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes, &outcome.pmap_types)? {
+        let t = Instant::now();
+        let commit = state.inner.kv.commit_with_occ(
+            ns, &outcome.reads, &outcome.writes, &outcome.pmap_types,
+        )?;
+        stats.commit_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        match commit {
             CommitResult::Committed => {
                 let events = outcome.events.iter().map(|e| EventRecord {
                     module: e.module.clone(),
                     name: e.name.clone(),
                     args: e.args.iter().map(value_to_json).collect(),
                 }).collect();
+                stats.count.fetch_add(1, Ordering::Relaxed);
+                stats.total_ns.fetch_add(total_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 return Ok(TxResponse {
                     result: value_to_json(&outcome.result),
                     writes_applied: writes_n,
