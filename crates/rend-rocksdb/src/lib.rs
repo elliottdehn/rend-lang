@@ -109,6 +109,15 @@ pub enum CommitResult {
     Conflict,
 }
 
+/// One commit job — an `ExecOutcome`'s read-set, write-set, and
+/// pmap type table — to be processed by [`RocksKv::commit_batch`]
+/// alongside zero or more sibling jobs in the same namespace.
+pub struct CommitJob {
+    pub reads: HashMap<u128, Value>,
+    pub writes: HashMap<u128, Value>,
+    pub pmap_types: HashMap<u128, (Type, Type)>,
+}
+
 /// Outcome of a single nonce CAS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonceResult {
@@ -215,11 +224,78 @@ impl RocksKv {
     /// parallel — neither's `get_for_update` keys overlap, so
     /// neither blocks the other.
     ///
+    /// Group-commit entry point: process N jobs in one
+    /// `WriteBatch` + one `db.write_opt`. Each job is validated
+    /// against the evolving in-batch overlay (jobs earlier in the
+    /// batch shadow on-disk state); pmap merges run against the
+    /// same overlay so a transfer following another transfer in
+    /// the same batch sees the prior root, not the stale on-disk
+    /// one. A single fsync amortizes across the whole batch.
+    ///
+    /// Returns one `CommitResult` per input job, in order. If the
+    /// underlying `db.write_opt` fails, all jobs share the same
+    /// rocksdb error.
+    pub fn commit_batch(
+        &self,
+        ns: NamespaceId,
+        jobs: &[CommitJob],
+    ) -> Result<Vec<CommitResult>, rocksdb::Error> {
+        use std::sync::atomic::Ordering;
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let lock = self.ns_lock(ns);
+        let _guard = lock.lock().unwrap();
+
+        let validate_t0 = std::time::Instant::now();
+        // Per-cell effective state evolved by successful jobs.
+        let mut overlay: HashMap<u128, Value> = HashMap::new();
+        let mut outcomes: Vec<CommitResult> = Vec::with_capacity(jobs.len());
+
+        for job in jobs {
+            match validate_and_apply_job(self, ns, job, &mut overlay)? {
+                JobValidation::Apply => outcomes.push(CommitResult::Committed),
+                JobValidation::Conflict => outcomes.push(CommitResult::Conflict),
+            }
+        }
+        self.timings.validate_ns.fetch_add(
+            validate_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        // Flush every cell in the overlay (originals + merge-produced
+        // HAMT nodes) in one WriteBatch. Cells touched by a job that
+        // ended in Conflict were never inserted into the overlay so
+        // they don't leak into the write set.
+        let stage_t0 = std::time::Instant::now();
+        let mut batch = WriteBatchWithTransaction::<true>::default();
+        for (cell, value) in &overlay {
+            batch.put(encode_key(ns, *cell), rend::serialize::serialize(value));
+        }
+        self.timings.stage_writes_ns.fetch_add(
+            stage_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let commit_t0 = std::time::Instant::now();
+        let mut wo = WriteOptions::default();
+        if !self.durable.load(Ordering::Relaxed) {
+            wo.disable_wal(true);
+        } else {
+            wo.set_sync(true);
+        }
+        self.db.write_opt(batch, &wo)?;
+        self.timings.txn_commit_ns.fetch_add(
+            commit_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.timings.commits.fetch_add(1, Ordering::Relaxed);
+
+        Ok(outcomes)
+    }
+
+    /// Single-job convenience wrapper around [`commit_batch`]. Used
+    /// by callers that don't want to thread through the channel-based
+    /// committer task (and by tests / setup paths).
+    ///
     /// When a read mismatch lands on a pmap root cell whose K/V
-    /// types are recorded in `pmap_types`, this method attempts a
-    /// 3-way HAMT merge against the live and ancestor roots before
-    /// surfacing `Conflict`. Two transfers on disjoint accounts in
-    /// one bank merge byte-identically to the serialized outcome.
+    /// types are recorded in `pmap_types`, the merge runs against
+    /// the live and ancestor roots before surfacing `Conflict`.
     ///
     /// Synchronization: a per-namespace mutex serializes commits
     /// within an org. We do all of OCC validation ourselves; the
@@ -236,98 +312,12 @@ impl RocksKv {
         writes: &HashMap<u128, Value>,
         pmap_types: &HashMap<u128, (Type, Type)>,
     ) -> Result<CommitResult, rocksdb::Error> {
-        use std::sync::atomic::Ordering;
-
-        let lock = self.ns_lock(ns);
-        let _guard = lock.lock().unwrap();
-
-        let validate_t0 = std::time::Instant::now();
-        let mut effective_writes: HashMap<u128, Value> = writes.clone();
-        let mut merge_node_cells: Vec<(u128, Vec<u8>)> = Vec::new();
-
-        for (cell, expected) in reads {
-            let on_disk = self.db.get(encode_key(ns, *cell))?;
-            if read_matches(&on_disk, expected) {
-                continue;
-            }
-            // Read mismatch. Try a 3-way merge if this is a pmap root.
-            let Some((key_ty, val_ty)) = pmap_types.get(cell) else {
-                return Ok(CommitResult::Conflict);
-            };
-            let pmap_ty = Type::PMap {
-                key: Box::new(key_ty.clone()),
-                value: Box::new(val_ty.clone()),
-            };
-            let ancestor_root = match expected {
-                Value::PMap(h) => *h,
-                _ => return Ok(CommitResult::Conflict),
-            };
-            let live_root = match on_disk.as_ref()
-                .and_then(|b| rend::serialize::deserialize(b, &pmap_ty))
-            {
-                Some(Value::PMap(h)) => h,
-                _ => 0, // EMPTY
-            };
-            let our_root = match effective_writes.get(cell) {
-                Some(Value::PMap(h)) => *h,
-                _ => return Ok(CommitResult::Conflict),
-            };
-            // Build a Kv view that overlays the tx's in-flight writes
-            // on top of the underlying namespace; the merge may need
-            // to read HAMT nodes our tx wrote but didn't commit yet.
-            let view = self.namespace(ns);
-            let merge_kv = MergeKv { base: &view, overlay: writes };
-            let Some(merged) = rend::pmap::merge_three_way(
-                our_root, live_root, ancestor_root,
-                &merge_kv, key_ty, val_ty,
-            ) else {
-                // Real conflict — both sides changed the same key.
-                return Ok(CommitResult::Conflict);
-            };
-            effective_writes.insert(*cell, Value::PMap(merged.root));
-            merge_node_cells.extend(merged.new_cells);
-        }
-        self.timings.validate_ns.fetch_add(
-            validate_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        // Build a single WriteBatch with effective writes + any
-        // merge-synthesized HAMT node cells, and apply it
-        // atomically. WriteBatch's own atomicity is sufficient —
-        // we already serialized concurrent writers via the
-        // namespace mutex.
-        let stage_t0 = std::time::Instant::now();
-        let mut batch = WriteBatchWithTransaction::<true>::default();
-        for (cell, value) in &effective_writes {
-            batch.put(encode_key(ns, *cell), rend::serialize::serialize(value));
-        }
-        for (cell, bytes) in merge_node_cells {
-            batch.put(
-                encode_key(ns, cell),
-                rend::serialize::serialize(&Value::Bytes(bytes)),
-            );
-        }
-        self.timings.stage_writes_ns.fetch_add(
-            stage_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let commit_t0 = std::time::Instant::now();
-        let mut wo = WriteOptions::default();
-        if !self.durable.load(Ordering::Relaxed) {
-            wo.disable_wal(true);
-        } else {
-            // Real durability — fsync the WAL on every commit. On
-            // macOS this is fdatasync (page-cache flush, not device
-            // flush), but it's the closest analogue to what a
-            // production deployment would do in any environment
-            // where commit latency is dominated by sync, and is
-            // what makes group commit a meaningful win (per-batch
-            // sync amortizes across N commits).
-            wo.set_sync(true);
-        }
-        self.db.write_opt(batch, &wo)?;
-        self.timings.txn_commit_ns.fetch_add(
-            commit_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        self.timings.commits.fetch_add(1, Ordering::Relaxed);
-        Ok(CommitResult::Committed)
+        let job = CommitJob {
+            reads: reads.clone(),
+            writes: writes.clone(),
+            pmap_types: pmap_types.clone(),
+        };
+        Ok(self.commit_batch(ns, std::slice::from_ref(&job))?[0])
     }
 
     /// Atomically advance the auth nonce for `address` to
@@ -388,26 +378,120 @@ fn read_matches(on_disk: &Option<Vec<u8>>, expected: &Value) -> bool {
 }
 
 /// `Kv` view used during a 3-way pmap merge. Reads are sourced
-/// from `overlay` first (the in-flight tx's writes — HAMT nodes
-/// our tx produced but hasn't committed yet) and fall back to
-/// `base` (the underlying namespaced storage). This lets
-/// `pmap::merge_three_way` decode our tree's nodes without us
-/// having to flush them to disk first.
+/// from the per-job overlay first (HAMT nodes our tx produced but
+/// hasn't written to disk yet), then the in-batch overlay (HAMT
+/// nodes from earlier-in-this-batch jobs that have been applied),
+/// then `base` (the underlying namespaced storage). This lets
+/// `pmap::merge_three_way` decode any node the merge could need.
 struct MergeKv<'a> {
     base: &'a NamespacedKv,
-    overlay: &'a HashMap<u128, Value>,
+    job_overlay: &'a HashMap<u128, Value>,
+    batch_overlay: Option<&'a HashMap<u128, Value>>,
 }
 
 impl<'a> Kv for MergeKv<'a> {
     fn get(&self, key: u128) -> Option<Vec<u8>> {
-        if let Some(v) = self.overlay.get(&key) {
+        if let Some(v) = self.job_overlay.get(&key) {
             return Some(rend::serialize::serialize(v));
+        }
+        if let Some(b) = self.batch_overlay {
+            if let Some(v) = b.get(&key) {
+                return Some(rend::serialize::serialize(v));
+            }
         }
         self.base.get(key)
     }
     fn get_many(&self, keys: &[u128]) -> Vec<Option<Vec<u8>>> {
         keys.iter().map(|k| self.get(*k)).collect()
     }
+}
+
+/// Outcome of validating one job inside a batch.
+enum JobValidation {
+    /// Reads match (possibly via merge); writes were promoted into
+    /// the batch overlay.
+    Apply,
+    /// A non-pmap read mismatched, or a pmap merge could not
+    /// reconcile two same-key updates. Job's writes are not
+    /// promoted; the caller should signal `Conflict` to the
+    /// requester.
+    Conflict,
+}
+
+/// Validate `job`'s reads against the current effective state
+/// (`overlay` shadowing `kv`'s on-disk values). Pmap root mismatches
+/// run through `merge_three_way`. On success the job's writes (and
+/// any merge-produced HAMT node cells) are promoted into `overlay`.
+fn validate_and_apply_job(
+    kv: &RocksKv,
+    ns: NamespaceId,
+    job: &CommitJob,
+    overlay: &mut HashMap<u128, Value>,
+) -> Result<JobValidation, rocksdb::Error> {
+    // Per-job effective writes start as the job's own writes; merges
+    // may rewrite the pmap root and append merge-produced node cells.
+    let mut local_writes: HashMap<u128, Value> = job.writes.clone();
+    let mut merge_nodes: Vec<(u128, Vec<u8>)> = Vec::new();
+
+    for (cell, expected) in &job.reads {
+        // Effective live value for this cell: in-batch overlay first
+        // (latest committed-in-batch), then on-disk.
+        let on_disk_bytes: Option<Vec<u8>> = match overlay.get(cell) {
+            Some(v) => Some(rend::serialize::serialize(v)),
+            None => kv.db.get(encode_key(ns, *cell))?,
+        };
+        if read_matches(&on_disk_bytes, expected) {
+            continue;
+        }
+        let Some((key_ty, val_ty)) = job.pmap_types.get(cell) else {
+            return Ok(JobValidation::Conflict);
+        };
+        let pmap_ty = Type::PMap {
+            key: Box::new(key_ty.clone()),
+            value: Box::new(val_ty.clone()),
+        };
+        let ancestor_root = match expected {
+            Value::PMap(h) => *h,
+            _ => return Ok(JobValidation::Conflict),
+        };
+        let live_root = match on_disk_bytes.as_ref()
+            .and_then(|b| rend::serialize::deserialize(b, &pmap_ty))
+        {
+            Some(Value::PMap(h)) => h,
+            _ => 0, // EMPTY
+        };
+        let our_root = match local_writes.get(cell) {
+            Some(Value::PMap(h)) => *h,
+            _ => return Ok(JobValidation::Conflict),
+        };
+        let view = kv.namespace(ns);
+        let merge_kv = MergeKv {
+            base: &view,
+            job_overlay: &job.writes,
+            batch_overlay: Some(overlay),
+        };
+        let Some(merged) = rend::pmap::merge_three_way(
+            our_root, live_root, ancestor_root,
+            &merge_kv, key_ty, val_ty,
+        ) else {
+            return Ok(JobValidation::Conflict);
+        };
+        local_writes.insert(*cell, Value::PMap(merged.root));
+        merge_nodes.extend(merged.new_cells);
+    }
+
+    // All reads validated. Promote local writes into the batch
+    // overlay so the next job sees them. Note `overlay` already has
+    // the job's writes inserted via the caller post-loop, so here
+    // we only need to push the merge-produced root substitutions and
+    // any new HAMT node cells.
+    for (cell, value) in local_writes {
+        overlay.insert(cell, value);
+    }
+    for (cell, bytes) in merge_nodes {
+        overlay.insert(cell, Value::Bytes(bytes));
+    }
+    Ok(JobValidation::Apply)
 }
 
 /// Per-tx, per-namespace read view. Implements the rend `Kv` trait

@@ -73,7 +73,7 @@ async fn handle_socket(socket: WebSocket, state: ServerState, ns: NamespaceId) {
                 let state = state.clone();
                 let out_tx = out_tx.clone();
                 tokio::spawn(async move {
-                    let response = process_frame(&state, ns, &text);
+                    let response = process_frame(&state, ns, &text).await;
                     let _ = out_tx.send(Message::Text(response)).await;
                 });
             }
@@ -96,7 +96,7 @@ struct Frame {
     body: serde_json::Value,
 }
 
-fn process_frame(state: &ServerState, ns: NamespaceId, text: &str) -> String {
+async fn process_frame(state: &ServerState, ns: NamespaceId, text: &str) -> String {
     let frame: Frame = match serde_json::from_str(text) {
         Ok(f) => f,
         Err(e) => return error_frame(serde_json::Value::Null, &format!("frame parse: {e}")),
@@ -110,9 +110,10 @@ fn process_frame(state: &ServerState, ns: NamespaceId, text: &str) -> String {
         "deploy" => parse_body::<DeployBody>(frame.body)
             .and_then(|b| do_deploy(state, ns, b))
             .map(|r| serde_json::to_value(r).unwrap()),
-        "tx" => parse_body::<TxBody>(frame.body)
-            .and_then(|b| do_tx(state, ns, b))
-            .map(|r| serde_json::to_value(r).unwrap()),
+        "tx" => match parse_body::<TxBody>(frame.body) {
+            Ok(b) => do_tx(state, ns, b).await.map(|r| serde_json::to_value(r).unwrap()),
+            Err(e) => Err(e),
+        },
         "query" => parse_body::<TxBody>(frame.body)
             .and_then(|b| do_query(state, ns, b))
             .map(|r| serde_json::to_value(r).unwrap()),

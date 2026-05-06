@@ -54,6 +54,7 @@
 //! constructor."
 
 pub mod auth;
+mod committer;
 mod ws;
 
 use anyhow::Context;
@@ -98,6 +99,14 @@ struct Inner {
     kv: RocksKv,
     fuel: u64,
     stats: TxStats,
+    /// Per-namespace channel into the group-commit pipeline. Filled
+    /// lazily on first use of an org. Each entry's task drains the
+    /// receiver, batches up to `MAX_BATCH` jobs, and processes them
+    /// via one `RocksKv::commit_batch` call (one fsync, one
+    /// WriteBatch). See the `committer` module.
+    committers: std::sync::Mutex<
+        std::collections::HashMap<NamespaceId, tokio::sync::mpsc::Sender<committer::Job>>,
+    >,
 }
 
 /// Per-stage timing counters, aggregated across all tx handler
@@ -120,7 +129,14 @@ pub struct TxStats {
 
 impl ServerState {
     pub fn new(kv: RocksKv, fuel: u64) -> Self {
-        Self { inner: Arc::new(Inner { kv, fuel, stats: TxStats::default() }) }
+        Self {
+            inner: Arc::new(Inner {
+                kv,
+                fuel,
+                stats: TxStats::default(),
+                committers: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }),
+        }
     }
 
     pub fn stats(&self) -> &TxStats {
@@ -132,6 +148,22 @@ impl ServerState {
     /// the HTTP API.
     pub(crate) fn kv(&self) -> &RocksKv {
         &self.inner.kv
+    }
+
+    /// Get-or-spawn the per-namespace committer task and return
+    /// its inbox channel. Channel is unbounded — the committer
+    /// drains aggressively, so backpressure happens at the
+    /// `do_tx`-yielding-on-oneshot level rather than the send.
+    pub(crate) fn committer_for(&self, ns: NamespaceId) -> tokio::sync::mpsc::Sender<committer::Job> {
+        let mut map = self.inner.committers.lock().unwrap();
+        if let Some(s) = map.get(&ns) {
+            return s.clone();
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(committer::CHANNEL_CAP);
+        let kv = self.inner.kv.clone();
+        tokio::spawn(committer::run(kv, ns, rx));
+        map.insert(ns, tx.clone());
+        tx
     }
 
     fn ns_for(&self, org: &str) -> NamespaceId {
@@ -422,10 +454,10 @@ async fn submit_tx(
     Json(body): Json<TxBody>,
 ) -> ServerResult<Json<TxResponse>> {
     let ns = state.ns_for(&org);
-    Ok(Json(do_tx(&state, ns, body)?))
+    Ok(Json(do_tx(&state, ns, body).await?))
 }
 
-pub(crate) fn do_tx(
+pub(crate) async fn do_tx(
     state: &ServerState,
     ns: NamespaceId,
     body: TxBody,
@@ -454,11 +486,30 @@ pub(crate) fn do_tx(
             .map_err(ServerError::Rend)?;
         stats.execute_tx_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+        // Hand the outcome off to the per-namespace committer task,
+        // which batches it with any sibling commits in flight and
+        // settles them all in one fsync. Await our oneshot for the
+        // verdict.
         let writes_n = outcome.writes.len();
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         let t = Instant::now();
-        let commit = state.inner.kv.commit_with_occ(
-            ns, &outcome.reads, &outcome.writes, &outcome.pmap_types,
-        )?;
+        let job = committer::Job {
+            reads: outcome.reads,
+            writes: outcome.writes,
+            pmap_types: outcome.pmap_types,
+            response: resp_tx,
+        };
+        // Channel send only fails if the committer task has died; treat
+        // as commit-side error.
+        state
+            .committer_for(ns)
+            .send(job)
+            .await
+            .map_err(|_| ServerError::Other(anyhow::anyhow!("committer task gone")))?;
+        let commit = resp_rx
+            .await
+            .map_err(|_| ServerError::Other(anyhow::anyhow!("committer dropped response")))?
+            .map_err(ServerError::RocksDb)?;
         stats.commit_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         match commit {
