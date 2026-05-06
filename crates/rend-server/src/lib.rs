@@ -279,7 +279,7 @@ pub(crate) fn do_deploy(
             });
         };
         let writes_n = outcome.writes.len();
-        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes)? {
+        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes, &outcome.pmap_types)? {
             CommitResult::Committed => {
                 return Ok(DeployResponse {
                     result: value_to_json(&outcome.result),
@@ -339,7 +339,7 @@ pub(crate) fn do_tx(
             .execute_tx(&tx, &deps, rend::Fuel::new(state.inner.fuel), &view)
             .map_err(ServerError::Rend)?;
         let writes_n = outcome.writes.len();
-        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes)? {
+        match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes, &outcome.pmap_types)? {
             CommitResult::Committed => {
                 let events = outcome.events.iter().map(|e| EventRecord {
                     module: e.module.clone(),

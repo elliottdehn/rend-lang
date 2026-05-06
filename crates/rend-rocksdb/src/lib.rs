@@ -34,6 +34,7 @@
 //! are detected by RocksDB; conflicts on disjoint cells aren't, so
 //! disjoint-key txs commit in parallel.
 
+use rend::ast::Type;
 use rend::kv::Kv;
 use rend::value::Value;
 use rocksdb::{
@@ -155,27 +156,84 @@ impl RocksKv {
     /// Two txs that touch disjoint sets of cells commit in
     /// parallel — neither's `get_for_update` keys overlap, so
     /// neither blocks the other.
+    ///
+    /// When a read mismatch lands on a pmap root cell whose K/V
+    /// types are recorded in `pmap_types`, this method attempts a
+    /// 3-way HAMT merge against the live and ancestor roots before
+    /// surfacing `Conflict`. Two transfers on disjoint accounts in
+    /// one bank merge byte-identically to the serialized outcome —
+    /// without this, every transfer in a shared org collides on the
+    /// pmap's root state cell and 409s.
     pub fn commit_with_occ(
         &self,
         ns: NamespaceId,
         reads: &HashMap<u128, Value>,
         writes: &HashMap<u128, Value>,
+        pmap_types: &HashMap<u128, (Type, Type)>,
     ) -> Result<CommitResult, rocksdb::Error> {
         let txn = self.db.transaction();
 
-        // 1+2: validate the read set.
+        // Effective writes start as the tx's writes; pmap merges may
+        // substitute the root pointer and add new HAMT node cells.
+        let mut effective_writes: HashMap<u128, Value> = writes.clone();
+        let mut merge_node_cells: Vec<(u128, Vec<u8>)> = Vec::new();
+
+        // 1+2: validate the read set, attempting merge on pmap mismatches.
         for (cell, expected) in reads {
             let on_disk = txn.get_for_update(encode_key(ns, *cell), true)?;
-            if !read_matches(&on_disk, expected) {
-                // Don't bother committing — we already know we'd
-                // conflict at the rend logical level.
-                return Ok(CommitResult::Conflict);
+            if read_matches(&on_disk, expected) {
+                continue;
             }
+            // Read mismatch. Try a 3-way merge if this is a pmap root.
+            let Some((key_ty, val_ty)) = pmap_types.get(cell) else {
+                return Ok(CommitResult::Conflict);
+            };
+            let pmap_ty = Type::PMap {
+                key: Box::new(key_ty.clone()),
+                value: Box::new(val_ty.clone()),
+            };
+            let ancestor_root = match expected {
+                Value::PMap(h) => *h,
+                _ => return Ok(CommitResult::Conflict),
+            };
+            let live_root = match on_disk.as_ref()
+                .and_then(|b| rend::serialize::deserialize(b, &pmap_ty))
+            {
+                Some(Value::PMap(h)) => h,
+                _ => 0, // EMPTY
+            };
+            let our_root = match effective_writes.get(cell) {
+                Some(Value::PMap(h)) => *h,
+                _ => return Ok(CommitResult::Conflict),
+            };
+            // Build a Kv view that overlays the tx's in-flight writes
+            // on top of the underlying namespace; the merge may need
+            // to read HAMT nodes our tx wrote but didn't commit yet.
+            let view = self.namespace(ns);
+            let merge_kv = MergeKv { base: &view, overlay: writes };
+            let Some(merged) = rend::pmap::merge_three_way(
+                our_root, live_root, ancestor_root,
+                &merge_kv, key_ty, val_ty,
+            ) else {
+                // Real conflict — both sides changed the same key.
+                return Ok(CommitResult::Conflict);
+            };
+            effective_writes.insert(*cell, Value::PMap(merged.root));
+            merge_node_cells.extend(merged.new_cells);
         }
 
-        // 3: stage writes.
-        for (cell, value) in writes {
+        // 3: stage effective writes (originals + any merge substitutions).
+        for (cell, value) in &effective_writes {
             txn.put(encode_key(ns, *cell), rend::serialize::serialize(value))?;
+        }
+        // Newly synthesized HAMT node cells from a merge — store
+        // wrapped as Value::Bytes so reads via Tx::read_cell decode
+        // the raw bytes the same way they decode any node cell.
+        for (cell, bytes) in merge_node_cells {
+            txn.put(
+                encode_key(ns, cell),
+                rend::serialize::serialize(&Value::Bytes(bytes)),
+            )?;
         }
 
         // 4: commit. Rocks surfaces "another tx wrote to a key we
@@ -243,6 +301,29 @@ fn read_matches(on_disk: &Option<Vec<u8>>, expected: &Value) -> bool {
             let want = rend::serialize::serialize(expected);
             *bytes == want
         }
+    }
+}
+
+/// `Kv` view used during a 3-way pmap merge. Reads are sourced
+/// from `overlay` first (the in-flight tx's writes — HAMT nodes
+/// our tx produced but hasn't committed yet) and fall back to
+/// `base` (the underlying namespaced storage). This lets
+/// `pmap::merge_three_way` decode our tree's nodes without us
+/// having to flush them to disk first.
+struct MergeKv<'a> {
+    base: &'a NamespacedKv,
+    overlay: &'a HashMap<u128, Value>,
+}
+
+impl<'a> Kv for MergeKv<'a> {
+    fn get(&self, key: u128) -> Option<Vec<u8>> {
+        if let Some(v) = self.overlay.get(&key) {
+            return Some(rend::serialize::serialize(v));
+        }
+        self.base.get(key)
+    }
+    fn get_many(&self, keys: &[u128]) -> Vec<Option<Vec<u8>>> {
+        keys.iter().map(|k| self.get(*k)).collect()
     }
 }
 
@@ -332,7 +413,7 @@ mod tests {
         reads.insert(1u128, Value::U64(100));
         let mut writes = HashMap::new();
         writes.insert(1u128, Value::U64(200));
-        let r = kv.commit_with_occ(1, &reads, &writes).unwrap();
+        let r = kv.commit_with_occ(1, &reads, &writes, &HashMap::new()).unwrap();
         assert_eq!(r, CommitResult::Committed);
 
         // Verify post-commit state.
@@ -363,7 +444,7 @@ mod tests {
         reads.insert(1u128, Value::U64(100));
         let mut writes = HashMap::new();
         writes.insert(1u128, Value::U64(200));
-        let r = kv.commit_with_occ(1, &reads, &writes).unwrap();
+        let r = kv.commit_with_occ(1, &reads, &writes, &HashMap::new()).unwrap();
         assert_eq!(r, CommitResult::Conflict);
 
         // State unchanged from the other tx's value.
@@ -411,6 +492,134 @@ mod tests {
         );
     }
 
+    /// Build a pmap on `kv` (namespace 1) by inserting `entries`.
+    /// Returns the resulting root hash and the (read, write) sets
+    /// the runtime would have produced — wired so the commit path
+    /// can validate them.
+    #[cfg(test)]
+    fn build_pmap_in_ns(
+        kv: &RocksKv,
+        starting_root: u128,
+        entries: &[(i64, i64)],
+    ) -> (u128, HashMap<u128, Value>, HashMap<u128, Value>) {
+        let view = kv.namespace(1);
+        let mut tx = rend::tx::Tx::new(&view);
+        let mut h = starting_root;
+        for (k, v) in entries {
+            h = rend::pmap::set(
+                h, Value::Int(*k), Value::Int(*v),
+                &mut tx,
+                &Type::Int, &Type::Int,
+            ).unwrap();
+        }
+        let (reads, writes, _, _, _, _) = tx.into_full();
+        (h, reads, writes)
+    }
+
+    #[test]
+    fn commit_merges_disjoint_pmap_writes() {
+        // Two transactions both built on the same starting pmap
+        // root, each inserting a different key. The first commits;
+        // the second's commit sees the root cell has changed but
+        // the 3-way merge succeeds (disjoint subtrees) — both writes
+        // land. Without the merge wiring this would 409.
+        let dir = tempfile::tempdir().unwrap();
+        let kv = RocksKv::open(dir.path()).unwrap();
+        const ROOT_CELL: u128 = 0xACC0u128;
+
+        // Seed: build a base pmap with one entry, write it as the
+        // state cell's PMap pointer.
+        let (base_root, _seed_reads, seed_writes) = build_pmap_in_ns(&kv, 0, &[(1, 10)]);
+        let mut seed = seed_writes;
+        seed.insert(ROOT_CELL, Value::PMap(base_root));
+        kv.apply(1, &seed).unwrap();
+
+        // Tx A: read base_root, set key 99. (Inserts under one HAMT slot.)
+        let (root_a, _, writes_a_nodes) = build_pmap_in_ns(&kv, base_root, &[(99, 9900)]);
+        let mut reads_a = HashMap::new();
+        reads_a.insert(ROOT_CELL, Value::PMap(base_root));
+        let mut writes_a = writes_a_nodes;
+        writes_a.insert(ROOT_CELL, Value::PMap(root_a));
+
+        // Tx B: also reads base_root, sets a DIFFERENT key (2).
+        let (root_b, _, writes_b_nodes) = build_pmap_in_ns(&kv, base_root, &[(2, 20)]);
+        let mut reads_b = HashMap::new();
+        reads_b.insert(ROOT_CELL, Value::PMap(base_root));
+        let mut writes_b = writes_b_nodes;
+        writes_b.insert(ROOT_CELL, Value::PMap(root_b));
+
+        let mut pmap_types = HashMap::new();
+        pmap_types.insert(ROOT_CELL, (Type::Int, Type::Int));
+
+        // Commit A — no contention, succeeds.
+        let r = kv.commit_with_occ(1, &reads_a, &writes_a, &pmap_types).unwrap();
+        assert_eq!(r, CommitResult::Committed);
+
+        // Commit B — root cell has changed under us. Without merge,
+        // this would Conflict. With merge, A's insert (key 99) and
+        // B's insert (key 2) hit disjoint subtrees → merge succeeds.
+        let r = kv.commit_with_occ(1, &reads_b, &writes_b, &pmap_types).unwrap();
+        assert_eq!(r, CommitResult::Committed,
+            "disjoint-key writes on a pmap must merge instead of 409");
+
+        // Both keys must be present in the final tree.
+        let view = kv.namespace(1);
+        let final_root_bytes = view.get(ROOT_CELL).unwrap();
+        let final_root_v = rend::serialize::deserialize(
+            &final_root_bytes,
+            &Type::PMap { key: Box::new(Type::Int), value: Box::new(Type::Int) },
+        ).unwrap();
+        let final_root = match final_root_v { Value::PMap(h) => h, _ => panic!() };
+        let mut tx = rend::tx::Tx::new(&view);
+        for (k, expected) in &[(1, 10), (2, 20), (99, 9900)] {
+            assert_eq!(
+                rend::pmap::get(final_root, &Value::Int(*k), &mut tx, &Type::Int, &Type::Int),
+                Some(Value::Int(*expected)),
+                "key {k} missing from merged tree",
+            );
+        }
+    }
+
+    #[test]
+    fn commit_conflict_when_same_pmap_key_changes() {
+        // Both txs modify the SAME key — merge returns None and we
+        // surface Conflict so OCC retry kicks in.
+        let dir = tempfile::tempdir().unwrap();
+        let kv = RocksKv::open(dir.path()).unwrap();
+        const ROOT_CELL: u128 = 0xACC0u128;
+
+        let (base_root, _, seed_writes) = build_pmap_in_ns(&kv, 0, &[(1, 10)]);
+        let mut seed = seed_writes;
+        seed.insert(ROOT_CELL, Value::PMap(base_root));
+        kv.apply(1, &seed).unwrap();
+
+        // Both txs overwrite key=1 to different values.
+        let (root_a, _, writes_a_nodes) = build_pmap_in_ns(&kv, base_root, &[(1, 100)]);
+        let mut reads_a = HashMap::new();
+        reads_a.insert(ROOT_CELL, Value::PMap(base_root));
+        let mut writes_a = writes_a_nodes;
+        writes_a.insert(ROOT_CELL, Value::PMap(root_a));
+
+        let (root_b, _, writes_b_nodes) = build_pmap_in_ns(&kv, base_root, &[(1, 200)]);
+        let mut reads_b = HashMap::new();
+        reads_b.insert(ROOT_CELL, Value::PMap(base_root));
+        let mut writes_b = writes_b_nodes;
+        writes_b.insert(ROOT_CELL, Value::PMap(root_b));
+
+        let mut pmap_types = HashMap::new();
+        pmap_types.insert(ROOT_CELL, (Type::Int, Type::Int));
+
+        assert_eq!(
+            kv.commit_with_occ(1, &reads_a, &writes_a, &pmap_types).unwrap(),
+            CommitResult::Committed,
+        );
+        assert_eq!(
+            kv.commit_with_occ(1, &reads_b, &writes_b, &pmap_types).unwrap(),
+            CommitResult::Conflict,
+            "same-key writes must surface as conflict",
+        );
+    }
+
     #[test]
     fn commit_with_occ_treats_default_as_missing() {
         // rend reads a missing cell as the value-type default. The
@@ -422,7 +631,7 @@ mod tests {
         reads.insert(99u128, Value::U64(0));   // default for u64
         let mut writes = HashMap::new();
         writes.insert(99u128, Value::U64(42));
-        let r = kv.commit_with_occ(1, &reads, &writes).unwrap();
+        let r = kv.commit_with_occ(1, &reads, &writes, &HashMap::new()).unwrap();
         assert_eq!(r, CommitResult::Committed);
     }
 }
