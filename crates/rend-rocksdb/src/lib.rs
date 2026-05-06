@@ -38,11 +38,11 @@ use rend::ast::Type;
 use rend::kv::Kv;
 use rend::value::Value;
 use rocksdb::{
-    ColumnFamilyDescriptor, ErrorKind, OptimisticTransactionDB, OptimisticTransactionOptions,
-    Options, SingleThreaded, WriteBatchWithTransaction, WriteOptions,
+    ColumnFamilyDescriptor, ErrorKind, OptimisticTransactionDB, Options, SingleThreaded,
+    WriteBatchWithTransaction, WriteOptions,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub type NamespaceId = u64;
 
@@ -74,9 +74,18 @@ pub struct RocksKv {
     /// durable behavior (each commit fsyncs the WAL). True = trade
     /// last-few-ms-of-writes durability for ~10× faster commits;
     /// state still survives clean shutdown via the memtable+SST
-    /// flush path. Set via `RocksKv::open_with` /
-    /// `RocksKv::set_durability`.
+    /// flush path. Set via `RocksKv::set_durable`.
     durable: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-namespace commit mutexes. The commit path acquires the
+    /// namespace's mutex, validates and merges against current
+    /// state via plain reads, then applies a `WriteBatch`. This
+    /// replaces the `OptimisticTransactionDB`'s commit-time
+    /// conflict-tracking machinery (which we already duplicate in
+    /// `commit_with_occ`) with a much cheaper synchronization
+    /// primitive — at the cost of serializing commits within an
+    /// org. Cross-org commits remain fully parallel because
+    /// different namespaces hold different mutexes.
+    commit_locks: Arc<Mutex<HashMap<NamespaceId, Arc<Mutex<()>>>>>,
 }
 
 /// Atomic ns counters for the inner commit pipeline.
@@ -98,17 +107,6 @@ pub enum CommitResult {
     /// concurrent committer touching one of our keys. Caller
     /// should re-execute the rend tx against fresh state.
     Conflict,
-}
-
-/// Internal result of one `try_commit_once` attempt. `Retry` means
-/// "the rocksdb txn lost a race at commit time but the merge was
-/// fundamentally possible — try again with a fresh transaction
-/// against new live state". `Conflict` is terminal: the read set
-/// mismatched in a way merge can't reconcile.
-enum InnerResult {
-    Committed,
-    Conflict,
-    Retry,
 }
 
 /// Outcome of a single nonce CAS.
@@ -152,7 +150,21 @@ impl RocksKv {
             db: Arc::new(db),
             timings: Arc::new(CommitTimings::default()),
             durable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            commit_locks: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Get-or-insert the commit mutex for `ns`. The outer lock is
+    /// only held briefly during the lookup; the returned mutex is
+    /// what callers actually serialize on. Per-NS entries are kept
+    /// for the lifetime of the process — bounded by the number of
+    /// distinct orgs the server has ever served.
+    fn ns_lock(&self, ns: NamespaceId) -> Arc<Mutex<()>> {
+        let mut locks = self.commit_locks.lock().unwrap();
+        locks
+            .entry(ns)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Build a per-tx Kv view scoped to one namespace. The view is
@@ -207,19 +219,16 @@ impl RocksKv {
     /// types are recorded in `pmap_types`, this method attempts a
     /// 3-way HAMT merge against the live and ancestor roots before
     /// surfacing `Conflict`. Two transfers on disjoint accounts in
-    /// one bank merge byte-identically to the serialized outcome —
-    /// without this, every transfer in a shared org collides on the
-    /// pmap's root state cell and 409s.
+    /// one bank merge byte-identically to the serialized outcome.
     ///
-    /// On a `Busy`/`TryAgain` from `txn.commit()` (another committer
-    /// raced us between our last read and our commit), this loops
-    /// internally: open a fresh transaction, re-read live values,
-    /// re-attempt the merge against the new state. We only surface
-    /// `Conflict` when (a) merge truly cannot reconcile the writes
-    /// (same-key concurrent updates), (b) a non-pmap read mismatched,
-    /// or (c) the inner retry budget is exhausted. The caller's
-    /// re-execute path then doesn't fire on otherwise-mergeable
-    /// conflicts — saving the rend tx execution cost.
+    /// Synchronization: a per-namespace mutex serializes commits
+    /// within an org. We do all of OCC validation ourselves; the
+    /// `OptimisticTransactionDB` machinery would be redundant
+    /// overhead. Inside the mutex, plain `db.get` reads the latest
+    /// committed state (no concurrent writer can race because no
+    /// other committer can hold the mutex), so validation is
+    /// trivially correct. Cross-org commits hold disjoint mutexes
+    /// and run fully in parallel.
     pub fn commit_with_occ(
         &self,
         ns: NamespaceId,
@@ -227,69 +236,23 @@ impl RocksKv {
         writes: &HashMap<u128, Value>,
         pmap_types: &HashMap<u128, (Type, Type)>,
     ) -> Result<CommitResult, rocksdb::Error> {
-        // High cap. Each inner attempt re-runs the merge against the
-        // current live state without re-executing the rend tx, so it's
-        // cheap relative to surfacing Conflict and going back through
-        // the outer do_tx loop. The trade-off vs. surfacing earlier:
-        // worst-case tail latency is higher (a tx that loses many
-        // races spins the merge that many times), but the upside is
-        // that mergeable conflicts almost always commit eventually
-        // instead of 409ing the client. For a transactional workload
-        // this is the right shape — clients shouldn't have to plan
-        // for 14% of their transfers needing re-submission.
-        const INNER_MAX_ATTEMPTS: usize = 16;
-        for _ in 0..INNER_MAX_ATTEMPTS {
-            match self.try_commit_once(ns, reads, writes, pmap_types)? {
-                InnerResult::Committed => return Ok(CommitResult::Committed),
-                InnerResult::Conflict => return Ok(CommitResult::Conflict),
-                // Concurrent committer raced us; re-run the merge
-                // against the new live state without going back up
-                // through the rend re-execute path.
-                InnerResult::Retry => continue,
-            }
-        }
-        Ok(CommitResult::Conflict)
-    }
-
-    fn try_commit_once(
-        &self,
-        ns: NamespaceId,
-        reads: &HashMap<u128, Value>,
-        writes: &HashMap<u128, Value>,
-        pmap_types: &HashMap<u128, (Type, Type)>,
-    ) -> Result<InnerResult, rocksdb::Error> {
         use std::sync::atomic::Ordering;
-        // Build a fresh write-options every commit. Cheap (it's
-        // basically two booleans) and lets `set_durable` flip
-        // behavior at runtime without re-opening the DB.
-        let mut wo = WriteOptions::default();
-        if !self.durable.load(Ordering::Relaxed) {
-            wo.disable_wal(true);
-        }
-        let txn = self.db.transaction_opt(&wo, &OptimisticTransactionOptions::default());
 
+        let lock = self.ns_lock(ns);
+        let _guard = lock.lock().unwrap();
+
+        let validate_t0 = std::time::Instant::now();
         let mut effective_writes: HashMap<u128, Value> = writes.clone();
         let mut merge_node_cells: Vec<(u128, Vec<u8>)> = Vec::new();
-        let validate_t0 = std::time::Instant::now();
 
-        // Validate the read set, attempting merge on pmap mismatches.
-        // Cells we're also writing don't need `get_for_update`: RocksDB's
-        // write-side conflict tracking covers them at commit time, AND
-        // we re-validate by hand here. Read-only cells still need watch
-        // tracking — without it a concurrent committer could change the
-        // value between our validate and commit and we'd never know.
         for (cell, expected) in reads {
-            let on_disk = if writes.contains_key(cell) {
-                txn.get(encode_key(ns, *cell))?
-            } else {
-                txn.get_for_update(encode_key(ns, *cell), true)?
-            };
+            let on_disk = self.db.get(encode_key(ns, *cell))?;
             if read_matches(&on_disk, expected) {
                 continue;
             }
             // Read mismatch. Try a 3-way merge if this is a pmap root.
             let Some((key_ty, val_ty)) = pmap_types.get(cell) else {
-                return Ok(InnerResult::Conflict);
+                return Ok(CommitResult::Conflict);
             };
             let pmap_ty = Type::PMap {
                 key: Box::new(key_ty.clone()),
@@ -297,7 +260,7 @@ impl RocksKv {
             };
             let ancestor_root = match expected {
                 Value::PMap(h) => *h,
-                _ => return Ok(InnerResult::Conflict),
+                _ => return Ok(CommitResult::Conflict),
             };
             let live_root = match on_disk.as_ref()
                 .and_then(|b| rend::serialize::deserialize(b, &pmap_ty))
@@ -307,7 +270,7 @@ impl RocksKv {
             };
             let our_root = match effective_writes.get(cell) {
                 Some(Value::PMap(h)) => *h,
-                _ => return Ok(InnerResult::Conflict),
+                _ => return Ok(CommitResult::Conflict),
             };
             // Build a Kv view that overlays the tx's in-flight writes
             // on top of the underlying namespace; the merge may need
@@ -319,7 +282,7 @@ impl RocksKv {
                 &merge_kv, key_ty, val_ty,
             ) else {
                 // Real conflict — both sides changed the same key.
-                return Ok(InnerResult::Conflict);
+                return Ok(CommitResult::Conflict);
             };
             effective_writes.insert(*cell, Value::PMap(merged.root));
             merge_node_cells.extend(merged.new_cells);
@@ -327,32 +290,35 @@ impl RocksKv {
         self.timings.validate_ns.fetch_add(
             validate_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        // Stage effective writes (originals + any merge substitutions).
+        // Build a single WriteBatch with effective writes + any
+        // merge-synthesized HAMT node cells, and apply it
+        // atomically. WriteBatch's own atomicity is sufficient —
+        // we already serialized concurrent writers via the
+        // namespace mutex.
         let stage_t0 = std::time::Instant::now();
+        let mut batch = WriteBatchWithTransaction::<true>::default();
         for (cell, value) in &effective_writes {
-            txn.put(encode_key(ns, *cell), rend::serialize::serialize(value))?;
+            batch.put(encode_key(ns, *cell), rend::serialize::serialize(value));
         }
         for (cell, bytes) in merge_node_cells {
-            txn.put(
+            batch.put(
                 encode_key(ns, cell),
                 rend::serialize::serialize(&Value::Bytes(bytes)),
-            )?;
+            );
         }
         self.timings.stage_writes_ns.fetch_add(
             stage_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let commit_t0 = std::time::Instant::now();
-        let res = match txn.commit() {
-            Ok(()) => Ok(InnerResult::Committed),
-            Err(e) => match e.kind() {
-                ErrorKind::Busy | ErrorKind::TryAgain => Ok(InnerResult::Retry),
-                _ => Err(e),
-            },
-        };
+        let mut wo = WriteOptions::default();
+        if !self.durable.load(Ordering::Relaxed) {
+            wo.disable_wal(true);
+        }
+        self.db.write_opt(batch, &wo)?;
         self.timings.txn_commit_ns.fetch_add(
             commit_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
         self.timings.commits.fetch_add(1, Ordering::Relaxed);
-        res
+        Ok(CommitResult::Committed)
     }
 
     /// Atomically advance the auth nonce for `address` to
