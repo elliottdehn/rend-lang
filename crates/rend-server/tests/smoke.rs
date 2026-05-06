@@ -7,6 +7,7 @@
 //! integration, per-org-namespace routing, or auth middleware
 //! breaks this test.
 
+use futures_util::{SinkExt, StreamExt};
 use rend_rocksdb::RocksKv;
 use rend_server::auth::{Eoa, NONCE_HEADER, SIG_HEADER};
 use rend_server::ServerState;
@@ -14,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
 
 async fn spawn_server() -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -351,6 +353,81 @@ async fn replayed_nonce_is_rejected() {
     let second = send().await;
     assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED,
         "replay must be rejected");
+}
+
+#[tokio::test]
+async fn ws_round_trip() {
+    // Open a /stream socket, run compile → deploy → tx → query
+    // through frames. The handshake is the only signed step;
+    // subsequent frames carry no signature.
+    let (base, _dir) = spawn_server().await;
+    let wallet = Eoa::new();
+    let path = format!("/v1/orgs/{}/stream", wallet.address_hex());
+    let sig = wallet.sign("GET", &path, 1, &[]);
+    let host = base.trim_start_matches("http://").to_string();
+    let url = format!("ws://{host}{path}");
+    let req = http::Request::builder()
+        .method("GET")
+        .uri(&url)
+        .header(SIG_HEADER, format!("0x{}", hex::encode(sig)))
+        .header(NONCE_HEADER, "1")
+        .header("Host", &host)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(()).unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+
+    async fn call(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        id: u64, kind: &str, body: serde_json::Value,
+    ) -> serde_json::Value {
+        let frame = serde_json::json!({"id": id, "kind": kind, "body": body});
+        ws.send(Message::Text(frame.to_string())).await.unwrap();
+        let msg = ws.next().await.unwrap().unwrap();
+        let text = match msg { Message::Text(t) => t, _ => panic!("not text") };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["id"].as_u64(), Some(id), "response id mismatch");
+        assert!(v["ok"].as_bool().unwrap_or(false), "frame error: {v}");
+        v["result"].clone()
+    }
+
+    let src = "module ctr; state n: u64;
+        entry view fn current() -> u64 { return n; }
+        entry fn bump() -> u64 { n = n + 1u64; return n; }
+        fn main() -> i64 { return 0; }";
+    let r = call(&mut ws, 1, "compile", serde_json::json!({ "source": src })).await;
+    let hash = r["hash"].as_str().unwrap().to_string();
+    let _ = call(&mut ws, 2, "deploy", serde_json::json!({ "hash": hash })).await;
+    let r = call(&mut ws, 3, "tx", serde_json::json!({
+        "tx_source": "module t; fn main() -> u64 { return ctr::bump(); }",
+        "deps": [hash],
+    })).await;
+    assert_eq!(r["result"], serde_json::json!(1));
+    let r = call(&mut ws, 4, "query", serde_json::json!({
+        "tx_source": "module q; view fn main() -> u64 { return ctr::current(); }",
+        "deps": [hash],
+    })).await;
+    assert_eq!(r["result"], serde_json::json!(1));
+}
+
+#[tokio::test]
+async fn ws_upgrade_without_auth_rejected() {
+    let (base, _dir) = spawn_server().await;
+    let host = base.trim_start_matches("http://").to_string();
+    let url = format!("ws://{host}/v1/orgs/0xabc/stream");
+    let req = http::Request::builder()
+        .method("GET")
+        .uri(&url)
+        .header("Host", &host)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(()).unwrap();
+    let res = tokio_tungstenite::connect_async(req).await;
+    assert!(res.is_err(), "unauthed WS upgrade must fail");
 }
 
 #[tokio::test]

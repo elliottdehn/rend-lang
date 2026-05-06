@@ -54,6 +54,7 @@
 //! constructor."
 
 pub mod auth;
+mod ws;
 
 use anyhow::Context;
 use axum::{
@@ -150,6 +151,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/v1/orgs/:org/tx", post(submit_tx))
         .route("/v1/orgs/:org/query", post(submit_query))
         .route("/v1/orgs/:org/artifacts/:hash", get(get_artifact))
+        .route("/v1/orgs/:org/stream", get(ws::stream_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -217,17 +219,23 @@ async fn compile(
     Path(org): Path<String>,
     Json(body): Json<CompileBody>,
 ) -> ServerResult<Json<CompileResponse>> {
+    let ns = state.ns_for(&org);
+    Ok(Json(do_compile(&state, ns, body)?))
+}
+
+pub(crate) fn do_compile(
+    state: &ServerState,
+    ns: NamespaceId,
+    body: CompileBody,
+) -> ServerResult<CompileResponse> {
     let artifact = Engine::new()
         .compile(&body.source)
         .map_err(ServerError::Rend)?;
     let hash = format!("{:032x}", artifact.content_hash);
     let bytes = hex::encode(&artifact.bytes);
     let modules = artifact.modules.iter().map(|m| m.name.clone()).collect();
-    // Store the artifact bytes under a namespaced key so deploy/tx
-    // can fetch them later. Same org → same artifact storage scope.
-    let ns = state.ns_for(&org);
     write_artifact(&state.inner.kv, ns, &artifact)?;
-    Ok(Json(CompileResponse { hash, bytes, modules }))
+    Ok(CompileResponse { hash, bytes, modules })
 }
 
 // ---------- deploy ----------
@@ -249,30 +257,34 @@ async fn deploy(
     Json(body): Json<DeployBody>,
 ) -> ServerResult<Json<DeployResponse>> {
     let ns = state.ns_for(&org);
+    Ok(Json(do_deploy(&state, ns, body)?))
+}
+
+pub(crate) fn do_deploy(
+    state: &ServerState,
+    ns: NamespaceId,
+    body: DeployBody,
+) -> ServerResult<DeployResponse> {
     let artifact = read_artifact(&state.inner.kv, ns, &body.hash)?
         .ok_or(ServerError::NotFound)?;
-
-    // Constructor (`fn main`) reads + writes state — full OCC
-    // commit path. Retry on conflict like a regular tx.
     for _ in 0..COMMIT_MAX_ATTEMPTS {
         let view = state.inner.kv.namespace(ns);
         let outcome = Engine::new()
             .deploy(&artifact, rend::Fuel::new(state.inner.fuel), &view)
             .map_err(ServerError::Rend)?;
         let Some(outcome) = outcome else {
-            // Module without a constructor — nothing to commit.
-            return Ok(Json(DeployResponse {
+            return Ok(DeployResponse {
                 result: serde_json::Value::Null,
                 writes_applied: 0,
-            }));
+            });
         };
         let writes_n = outcome.writes.len();
         match state.inner.kv.commit_with_occ(ns, &outcome.reads, &outcome.writes)? {
             CommitResult::Committed => {
-                return Ok(Json(DeployResponse {
+                return Ok(DeployResponse {
                     result: value_to_json(&outcome.result),
                     writes_applied: writes_n,
-                }));
+                });
             }
             CommitResult::Conflict => continue,
         }
@@ -309,15 +321,18 @@ async fn submit_tx(
     Json(body): Json<TxBody>,
 ) -> ServerResult<Json<TxResponse>> {
     let ns = state.ns_for(&org);
+    Ok(Json(do_tx(&state, ns, body)?))
+}
+
+pub(crate) fn do_tx(
+    state: &ServerState,
+    ns: NamespaceId,
+    body: TxBody,
+) -> ServerResult<TxResponse> {
     let deps = resolve_deps(&state.inner.kv, ns, &body.deps)?;
     let tx = Engine::new()
         .compile_tx(&body.tx_source, &deps)
         .map_err(ServerError::Rend)?;
-
-    // OCC retry loop: re-execute the rend tx if a concurrent
-    // committer wrote to any cell we read. Disjoint-cell txs
-    // commit in parallel — neither's read set overlaps the
-    // other's write set, so neither fires this branch.
     for _ in 0..COMMIT_MAX_ATTEMPTS {
         let view = state.inner.kv.namespace(ns);
         let outcome = Engine::new()
@@ -331,11 +346,11 @@ async fn submit_tx(
                     name: e.name.clone(),
                     args: e.args.iter().map(value_to_json).collect(),
                 }).collect();
-                return Ok(Json(TxResponse {
+                return Ok(TxResponse {
                     result: value_to_json(&outcome.result),
                     writes_applied: writes_n,
                     events,
-                }));
+                });
             }
             CommitResult::Conflict => continue,
         }
@@ -356,19 +371,23 @@ async fn submit_query(
     Json(body): Json<TxBody>,
 ) -> ServerResult<Json<QueryResponse>> {
     let ns = state.ns_for(&org);
+    Ok(Json(do_query(&state, ns, body)?))
+}
+
+pub(crate) fn do_query(
+    state: &ServerState,
+    ns: NamespaceId,
+    body: TxBody,
+) -> ServerResult<QueryResponse> {
     let deps = resolve_deps(&state.inner.kv, ns, &body.deps)?;
     let tx = Engine::new()
         .compile_tx(&body.tx_source, &deps)
         .map_err(ServerError::Rend)?;
-    // No org lock: queries don't write. The view of the database
-    // is "whatever's committed at this instant"; concurrent writes
-    // race against the read but that's expected behavior — same
-    // semantics SQLite gives you on a read-only handle.
     let view = state.inner.kv.namespace(ns);
     let outcome = Engine::new()
         .query(&tx, &deps, rend::Fuel::new(state.inner.fuel), &view)
         .map_err(ServerError::Rend)?;
-    Ok(Json(QueryResponse { result: value_to_json(&outcome.result) }))
+    Ok(QueryResponse { result: value_to_json(&outcome.result) })
 }
 
 // ---------- get artifact ----------

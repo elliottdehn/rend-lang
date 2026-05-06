@@ -38,6 +38,31 @@ cargo run --release -p rend-bench -- \
 | `POST` | `/v1/orgs/:org/tx` | `{ tx_source, deps: [hash...] }` | executes a tx; returns result + writes_applied + events |
 | `POST` | `/v1/orgs/:org/query` | `{ tx_source, deps: [hash...] }` | runs a `view`/`pure` tx on the read-only path; returns result |
 | `GET` | `/v1/orgs/:org/artifacts/:hash` | — | raw artifact bytes |
+| `GET` | `/v1/orgs/:org/stream` | — (WebSocket upgrade) | persistent socket; see [Streaming](#streaming) |
+
+## Streaming
+
+`GET /v1/orgs/:org/stream` upgrades to a WebSocket. The handshake is
+the only signed step (same `X-Rend-Sig` + `X-Rend-Nonce` headers as
+any other request, signed message uses method `GET`, the upgrade
+path, and an empty body). Once upgraded, the socket is bound to the
+recovered address and **subsequent frames carry no signature** —
+amortizing secp256k1 verify across many requests.
+
+Frame format (text JSON):
+
+```json
+// client → server
+{"id": <any>, "kind": "compile"|"deploy"|"tx"|"query", "body": {...}}
+
+// server → client
+{"id": <same>, "ok": true,  "result": {...}}
+{"id": <same>, "ok": false, "error": "..."}
+```
+
+`body` matches the HTTP endpoint of the same name, `result` matches
+its response. The server processes frames concurrently per socket;
+clients can interleave many in-flight requests by varying `id`.
 
 ## Configuration
 
