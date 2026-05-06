@@ -313,6 +313,15 @@ impl RocksKv {
         let mut wo = WriteOptions::default();
         if !self.durable.load(Ordering::Relaxed) {
             wo.disable_wal(true);
+        } else {
+            // Real durability — fsync the WAL on every commit. On
+            // macOS this is fdatasync (page-cache flush, not device
+            // flush), but it's the closest analogue to what a
+            // production deployment would do in any environment
+            // where commit latency is dominated by sync, and is
+            // what makes group commit a meaningful win (per-batch
+            // sync amortizes across N commits).
+            wo.set_sync(true);
         }
         self.db.write_opt(batch, &wo)?;
         self.timings.txn_commit_ns.fetch_add(
