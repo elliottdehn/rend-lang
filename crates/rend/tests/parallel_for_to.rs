@@ -196,6 +196,159 @@ fn parallel_for_to_source_must_be_u64_array() {
 }
 
 #[test]
+fn reserve_atomically_bumps_state_and_yields_consecutive_ids() {
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        state counter: u64;
+        fn main() -> u64 {
+            let a = reserve 3u64 from counter;
+            let b = reserve 2u64 from counter;
+            // a = [1,2,3], b = [4,5]. Counter now 5.
+            return a[0i64] + a[1i64] + a[2i64]
+                 + b[0i64] + b[1i64]
+                 + counter;
+        }
+    ";
+    // (1+2+3) + (4+5) + 5 = 20
+    let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(20));
+}
+
+#[test]
+fn reserve_rejects_non_u64_state() {
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        state counter: i64;
+        fn main() -> u64 {
+            let _ = reserve 3u64 from counter;
+            return 0u64;
+        }
+    ";
+    let err = Engine::new()
+        .execute(src, Fuel::new(10_000), &kv)
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("state must be u64"), "got: {msg}");
+}
+
+#[test]
+fn arr_t_n_allocates_default_filled_buffer() {
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        fn main() -> u64 {
+            let buf = arr<u64>[4u64];
+            return buf[0i64] + buf[1i64] + buf[2i64] + buf[3i64];
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(1_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(0));
+}
+
+#[test]
+fn arr_t_n_length_is_runtime_expression() {
+    // The buffer length is a runtime expression, not a literal.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        entry fn how_many() -> u64 { return 7u64; }
+        fn main() -> u64 {
+            let buf = arr<u64>[how_many()];
+            // Sum element 6 (which is 0 by default) — works only if
+            // buf has at least 7 slots.
+            return buf[6i64];
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(2_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(0));
+}
+
+#[test]
+fn continue_in_parallel_for_to_body_leaves_slot_at_default() {
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        state counter: u64;
+        fn main() -> u64 {
+            let ids = reserve 5u64 from counter;
+            let out = arr<u64>[5u64];
+            parallel for id in ids to out {
+                if id == 3u64 { continue; }
+                id * 10u64
+            }
+            // ids = [1,2,3,4,5]; id=3 skipped → out[2]=0.
+            // sum = 10+20+0+40+50 = 120.
+            return out[0i64] + out[1i64] + out[2i64]
+                 + out[3i64] + out[4i64];
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(20_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(120));
+}
+
+#[test]
+fn continue_preserves_state_writes_made_before_the_skip() {
+    // State writes that happen in the body BEFORE `continue`
+    // still merge into the parent Tx — only the output slot is
+    // skipped.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        state counter: u64;
+        state marks: pmap<u64, u64>;
+        fn main() -> u64 {
+            let ids = reserve 3u64 from counter;
+            let out = arr<u64>[3u64];
+            parallel for id in ids to out {
+                marks[id] = id * 100u64;   // recorded before continue
+                if id == 2u64 { continue; }
+                id * 10u64
+            }
+            // out = [10, 0, 30] (id=2 slot skipped → 0)
+            // marks = {1:100, 2:200, 3:300} — all writes persist
+            return (out[0i64] + out[1i64] + out[2i64]) * 10000u64
+                 + (marks[1u64] + marks[2u64] + marks[3u64]);
+        }
+    ";
+    // out sum = 10+0+30 = 40 → 400_000
+    // marks sum = 100+200+300 = 600
+    // total = 400_600
+    let out = Engine::new().execute(src, Fuel::new(20_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(400_600));
+}
+
+#[test]
+fn continue_inside_nested_for_loop_still_jumps_to_inner_loop_top() {
+    // `continue` inside a for-loop nested inside a parallel-for-to
+    // body should jump to the inner loop's iteration top, not
+    // skip the parallel slot.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        state counter: u64;
+        fn main() -> u64 {
+            let ids = reserve 3u64 from counter;
+            let out = arr<u64>[3u64];
+            parallel for id in ids to out {
+                let total = 0u64;
+                for j in 0u64..5u64 {
+                    if j == 2u64 { continue; }
+                    total = total + j;
+                }
+                // j=0+1+3+4 = 8 (j=2 skipped via inner continue)
+                total * id
+            }
+            // out = [8, 16, 24]; sum = 48
+            return out[0i64] + out[1i64] + out[2i64];
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(48));
+}
+
+#[test]
 fn parallel_for_to_keyword_does_not_break_to_as_parameter_name() {
     // `to` is a *contextual* keyword — only recognized in the
     // parallel-for production. Existing code using `to` as a

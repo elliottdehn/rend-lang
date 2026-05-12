@@ -1323,6 +1323,39 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Array(out))
             }
+            ExprKind::ArrayAlloc { elem_ty, len } => {
+                let len_v = self.eval(len, scopes)?;
+                let n = value_to_usize(&len_v).ok_or_else(|| Error::new(
+                    ErrorKind::Runtime,
+                    format!("`arr<T>[N]` length must be a non-negative integer, got {len_v}"),
+                    len.span,
+                ))?;
+                let default = Value::default_for(elem_ty);
+                let buf = vec![default; n];
+                Ok(Value::Array(buf))
+            }
+            ExprKind::Reserve { count, state } => {
+                let count_v = self.eval(count, scopes)?;
+                let n = value_to_u64(&count_v).ok_or_else(|| Error::new(
+                    ErrorKind::Runtime,
+                    format!("`reserve N from ...` count must be a non-negative integer, got {count_v}"),
+                    count.span,
+                ))?;
+                let prev = match self.read_state(state) {
+                    Value::U64(p) => p,
+                    other => return Err(Error::new(
+                        ErrorKind::Runtime,
+                        format!("`reserve ... from {state}`: state must be u64, got {other}"),
+                        expr.span,
+                    )),
+                };
+                self.write_state(state, Value::U64(prev + n));
+                let mut out = Vec::with_capacity(n as usize);
+                for i in 0..n {
+                    out.push(Value::U64(prev + i + 1));
+                }
+                Ok(Value::Array(out))
+            }
             ExprKind::StructLit { name, fields } => {
                 let decl = self.struct_decls.get(name).ok_or_else(|| {
                     Error::new(
@@ -2167,6 +2200,26 @@ fn is_keyable_value(v: &Value) -> bool {
         Value::Enum { payload, .. } => payload.iter().all(is_keyable_value),
         _ => false,
     }
+}
+
+/// Coerce a Value carrying a non-negative integer to u64. Returns
+/// None for non-integer values or negative ints. Used to read
+/// runtime length expressions for `arr<T>[N]` and `reserve N from`.
+fn value_to_u64(v: &Value) -> Option<u64> {
+    use num_traits::ToPrimitive;
+    match v {
+        Value::U64(n) => Some(*n),
+        Value::U32(n) => Some(*n as u64),
+        Value::I32(n) if *n >= 0 => Some(*n as u64),
+        Value::U128(n) => (*n).try_into().ok(),
+        Value::Int(n) => n.to_u64(),
+        Value::UInt(n) => n.to_u64(),
+        _ => None,
+    }
+}
+
+fn value_to_usize(v: &Value) -> Option<usize> {
+    value_to_u64(v).and_then(|n| n.try_into().ok())
 }
 
 fn default_for_type(ty: &Type) -> Value {

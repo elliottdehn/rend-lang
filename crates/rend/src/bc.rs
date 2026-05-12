@@ -301,6 +301,27 @@ pub enum Instr {
         id_reg: u16,
         after_pc: u32,
     },
+    /// `arr<T>[N]` — allocate a fresh `[T]` of length `len_reg`
+    /// filled with the value in `default_reg`. The default is
+    /// computed once by the compile pass (`Value::default_for(T)`
+    /// loaded into a register) and replicated `n` times into the
+    /// destination array. `len_reg` must hold a non-negative
+    /// integer; runtime panic on overflow / negative.
+    ArrayAlloc { dst: u16, len_reg: u16, default_reg: u16 },
+    /// `reserve N from <state>` — atomic counter bump on a u64
+    /// state slot. Reads the slot's current value `prev`, writes
+    /// back `prev + n`, and produces a `[u64]` of length `n` whose
+    /// elements are `prev+1, prev+2, ..., prev+n`. The bumped slot
+    /// is the only contended cell; the returned array carries the
+    /// reservation outward and the caller can iterate / index it
+    /// independently (e.g. as the source of a `parallel for`).
+    Reserve { dst: u16, state_idx: u16, count_reg: u16 },
+    /// Body of a `parallel for ... to` block reached `continue` —
+    /// the leg terminates with a "skip" signal so the dispatcher
+    /// leaves `output[idx]` at its default value. Emitted only by
+    /// the compile pass inside a parallel-for-body context where
+    /// no inner loop swallows the `continue`.
+    ParallelForSkip,
     /// Read a tx-context field. `kind`: 0 = msg_sender (Address),
     /// 1 = block_timestamp (u64), 2 = block_number (u64).
     Context { dst: u16, kind: u8 },

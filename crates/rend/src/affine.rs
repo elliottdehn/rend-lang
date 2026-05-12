@@ -502,6 +502,14 @@ fn check_expr(
             for e in elems { check_expr(e, env, sigs, states, cap_decls)?; }
             Ok(Type::Int)
         }
+        ExprKind::ArrayAlloc { len, .. } => {
+            check_expr(len, env, sigs, states, cap_decls)?;
+            Ok(Type::Int)
+        }
+        ExprKind::Reserve { count, .. } => {
+            check_expr(count, env, sigs, states, cap_decls)?;
+            Ok(Type::Int)
+        }
         ExprKind::StructLit { name, fields } => {
             for (_, e) in fields { check_expr(e, env, sigs, states, cap_decls)?; }
             // If the literal names a cap, return the matching cap type

@@ -592,6 +592,8 @@ fn annotate_expr(
         ExprKind::Array(elems) | ExprKind::SetLit(elems) | ExprKind::TupleLit(elems) => {
             for e in elems.iter_mut() { annotate_expr(e, scopes, state_types, ifaces); }
         }
+        ExprKind::ArrayAlloc { len, .. } => annotate_expr(len, scopes, state_types, ifaces),
+        ExprKind::Reserve { count, .. } => annotate_expr(count, scopes, state_types, ifaces),
         ExprKind::DictLit(pairs) => {
             for (k, v) in pairs.iter_mut() {
                 annotate_expr(k, scopes, state_types, ifaces);
@@ -2652,6 +2654,48 @@ impl TypeChecker {
                     }
                 }
                 Ok(Type::Array(Box::new(first)))
+            }
+            ExprKind::ArrayAlloc { elem_ty, len } => {
+                // Length expression must be an integer type. The
+                // element type is whatever the user named — typeck
+                // doesn't restrict it; the compile pass picks the
+                // default value for that type.
+                let len_ty = self.check_expr(len, env)?;
+                if !is_int(&len_ty) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!("`arr<T>[N]` length must be an integer, got {len_ty}"),
+                        len.span,
+                    ));
+                }
+                Ok(Type::Array(Box::new(elem_ty.clone())))
+            }
+            ExprKind::Reserve { count, state } => {
+                // The named state slot must be a u64. The count is
+                // any integer. The result is `[u64]` of the reserved
+                // ids — runtime atomically bumps the slot and yields
+                // the reserved range.
+                let count_ty = self.check_expr(count, env)?;
+                if !is_int(&count_ty) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!("`reserve N from <state>` count must be an integer, got {count_ty}"),
+                        count.span,
+                    ));
+                }
+                let state_ty = self.states.get(state).ok_or_else(|| Error::new(
+                    ErrorKind::Type,
+                    format!("`reserve ... from {state}`: `{state}` is not a state slot"),
+                    expr.span,
+                ))?;
+                if !matches!(state_ty, Type::U64) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!("`reserve ... from {state}`: state must be u64, got {state_ty}"),
+                        expr.span,
+                    ));
+                }
+                Ok(Type::Array(Box::new(Type::U64)))
             }
             ExprKind::DynCall { target_ident, method, args, .. } => {
                 // Resolve target_ident to a Type::Interface. Locals

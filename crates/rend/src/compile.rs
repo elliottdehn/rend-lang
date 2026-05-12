@@ -220,6 +220,36 @@ fn default_for(ty: &Type) -> Value {
     Value::default_for(ty)
 }
 
+/// Build an `Expr` that evaluates to `Type::default_for(t)` at
+/// runtime. Used by `ExprKind::ArrayAlloc` so the compile pass can
+/// load the default value into a register and the VM can replicate
+/// it `N` times into the allocated buffer.
+fn default_expr_for_type(ty: &Type, span: crate::token::Span) -> Result<Expr, Error> {
+    use num_bigint::BigInt;
+    let kind = match ty {
+        Type::Bool   => ExprKind::Bool(false),
+        Type::I32    => ExprKind::I32(0),
+        Type::U32    => ExprKind::U32(0),
+        Type::U64    => ExprKind::U64(0),
+        Type::U128   => ExprKind::U128(0),
+        Type::Int    => ExprKind::Int(BigInt::from(0)),
+        Type::UInt   => ExprKind::UInt(BigInt::from(0)),
+        Type::String => ExprKind::Str(String::new()),
+        // Empty array literal of the element type isn't allowed by
+        // typeck (would itself need a typed binding), so for nested
+        // array elements we can't currently produce a default at
+        // the language level. Same for structs/enums/dicts/sets in
+        // slice 2 — these become slot defaults via raw Value (no
+        // expression path) in a future slice.
+        _ => return Err(Error::new(
+            ErrorKind::Type,
+            format!("`arr<T>[N]` not yet supported for element type {ty}"),
+            span,
+        )),
+    };
+    Ok(Expr { kind, span })
+}
+
 fn compile_fn<'a>(
     f: &FnDef,
     fn_index: &'a HashMap<String, usize>,
@@ -266,6 +296,8 @@ fn compile_fn<'a>(
         scopes: vec![HashMap::new()],
         pipe_stack: Vec::new(),
         loop_stack: Vec::new(),
+        parallel_for_depth: 0,
+        parallel_for_loop_base: Vec::new(),
     };
     for (i, p) in f.params.iter().enumerate() {
         comp.scopes.last_mut().unwrap().insert(p.name.clone(), i as u16);
@@ -333,6 +365,19 @@ struct FnCompiler<'a> {
     /// Each frame collects placeholder Jump positions emitted by `break` and
     /// `continue` so the loop's compiler can backpatch them at the end.
     loop_stack: Vec<LoopFrame>,
+    /// Depth counter for `parallel for ... to` bodies — incremented on
+    /// entry, decremented on exit. When the body's compile sees a
+    /// `continue` with no enclosing inner loop (loop_stack empty
+    /// *within* the body), it lowers to `ParallelForSkip` instead of
+    /// a Jump, signalling the dispatcher to leave the output slot at
+    /// its default. Tracked as depth (not a bool) so nested
+    /// parallel-for bodies (when later allowed) compose correctly.
+    parallel_for_depth: u32,
+    /// Snapshot of loop_stack.len() at parallel-for-body entry. Used
+    /// to detect "continue not inside an inner loop of the current
+    /// parallel-for body" — when loop_stack.len() <= snapshot,
+    /// continue means skip.
+    parallel_for_loop_base: Vec<usize>,
 }
 
 struct LoopFrame {
@@ -699,6 +744,19 @@ impl<'a> FnCompiler<'a> {
                 Ok(())
             }
             Stmt::Continue(span) => {
+                // Inside a `parallel for ... to` body, with no
+                // intervening inner loop, `continue` lowers to a
+                // skip signal that returns from the leg without
+                // writing `output[idx]` — the slot stays at the
+                // default value computed when the output buffer
+                // was allocated.
+                let in_pfor_body = self.parallel_for_depth > 0
+                    && self.loop_stack.len()
+                        == *self.parallel_for_loop_base.last().unwrap_or(&0);
+                if in_pfor_body {
+                    self.code.push(Instr::ParallelForSkip);
+                    return Ok(());
+                }
                 if self.loop_stack.is_empty() {
                     return Err(Error::new(
                         ErrorKind::Type,
@@ -846,10 +904,18 @@ impl<'a> FnCompiler<'a> {
                 });
                 // Compile the body. Tail value lives in `tail_reg`;
                 // body terminates with ParallelYield(tail_reg) so the
-                // dispatcher captures it.
+                // dispatcher captures it. While inside the body,
+                // raise `parallel_for_depth` and snapshot
+                // `loop_stack.len()` so `continue` lowers to skip
+                // (unless an inner loop catches it).
                 let body_start = self.code.len() as u32;
                 let tail_reg = self.alloc();
-                self.compile_block_into(body, tail_reg)?;
+                self.parallel_for_depth += 1;
+                self.parallel_for_loop_base.push(self.loop_stack.len());
+                let body_result = self.compile_block_into(body, tail_reg);
+                self.parallel_for_loop_base.pop();
+                self.parallel_for_depth -= 1;
+                body_result?;
                 self.code.push(Instr::ParallelYield { value: Some(tail_reg) });
                 let body_end = self.code.len() as u32;
                 self.scopes.pop();
@@ -2110,6 +2176,26 @@ impl<'a> FnCompiler<'a> {
                 for _ in 0..elems.len() {
                     self.next_reg -= 1;
                 }
+                Ok(())
+            }
+            ExprKind::ArrayAlloc { elem_ty, len } => {
+                let len_reg = self.alloc();
+                self.compile_expr_into(len, len_reg)?;
+                let default_reg = self.alloc();
+                let default_expr = default_expr_for_type(elem_ty, expr.span)?;
+                self.compile_expr_into(&default_expr, default_reg)?;
+                self.code.push(Instr::ArrayAlloc { dst, len_reg, default_reg });
+                Ok(())
+            }
+            ExprKind::Reserve { count, state } => {
+                let count_reg = self.alloc();
+                self.compile_expr_into(count, count_reg)?;
+                let state_idx = *self.state_index.get(state).ok_or_else(|| Error::new(
+                    ErrorKind::Type,
+                    format!("`reserve ... from {state}`: `{state}` is not a state slot"),
+                    expr.span,
+                ))? as u16;
+                self.code.push(Instr::Reserve { dst, state_idx, count_reg });
                 Ok(())
             }
             ExprKind::StructLit { name, fields } => {

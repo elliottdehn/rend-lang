@@ -249,6 +249,12 @@ fn scan_expr(
         ExprKind::Array(elems) | ExprKind::SetLit(elems) => {
             for e in elems { scan_expr(e, iter_var, states, summaries, found, seen); }
         }
+        ExprKind::ArrayAlloc { len, .. } => {
+            scan_expr(len, iter_var, states, summaries, found, seen);
+        }
+        ExprKind::Reserve { count, .. } => {
+            scan_expr(count, iter_var, states, summaries, found, seen);
+        }
         ExprKind::DictLit(pairs) => {
             for (k, v) in pairs {
                 scan_expr(k, iter_var, states, summaries, found, seen);

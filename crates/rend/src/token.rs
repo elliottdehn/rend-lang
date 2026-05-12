@@ -88,6 +88,17 @@ pub enum Token {
     Desc,
     On,
     Delete,
+    /// `reserve <count_expr> from <state_ident>` — atomically bumps
+    /// the named u64 state cell by `count` and yields a `[u64]` of
+    /// the reserved ids (`previous_state + 1 .. + count`). One read
+    /// and one write on the contended counter.
+    Reserve,
+    /// `arr<T>[N]` — allocates a `[T]` of length `N` filled with
+    /// `T`'s default value. Distinct from an array literal because
+    /// the count is a runtime expression and the elements never
+    /// appear in source. The natural output buffer for a
+    /// `parallel for ... to` block.
+    Arr,
 
     // Punctuation
     LParen,

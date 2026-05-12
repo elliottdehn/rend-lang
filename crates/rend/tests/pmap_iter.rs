@@ -114,8 +114,8 @@ fn pvec_to_array_yields_index_order() {
             pvec_push(log, 10);
             pvec_push(log, 20);
             pvec_push(log, 30);
-            let arr = pvec_to_array(log);
-            return arr[0] + arr[1] * 10 + arr[2] * 100;
+            let xs = pvec_to_array(log);
+            return xs[0] + xs[1] * 10 + xs[2] * 100;
             // 10 + 200 + 3000 = 3210
         }
     ").unwrap();
@@ -139,8 +139,8 @@ fn pvec_to_array_handles_partial_last_block() {
         state log: pvec<i64>;
         fn main() -> i64 {
             for i in 0..33 { pvec_push(log, i); }
-            let arr = pvec_to_array(log);
-            return len(arr);
+            let xs = pvec_to_array(log);
+            return len(xs);
         }
     ").unwrap();
     assert_eq!(v, Value::int(33i64));
@@ -152,9 +152,9 @@ fn pvec_to_array_sum_after_many_pushes() {
         state log: pvec<i64>;
         fn main() -> i64 {
             for i in 1..=100 { pvec_push(log, i); }
-            let arr = pvec_to_array(log);
+            let xs = pvec_to_array(log);
             let total = 0;
-            for x in arr { total = total + x; }
+            for x in xs { total = total + x; }
             return total;            // 1..=100 = 5050
         }
     ").unwrap();

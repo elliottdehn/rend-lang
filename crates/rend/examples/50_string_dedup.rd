@@ -71,6 +71,10 @@ fn main() -> u64 {
     // the two intern_at legs then run under shadow Txs that
     // touch fully disjoint forward / reverse cells. The legs'
     // returned ids escape the parallel block into the outer scope.
+    // (Slice 2 adds `reserve N from state` + `parallel for ... to`
+    // sugar — see example 51 for that pattern; example 50 keeps
+    // the explicit form because the per-leg string association
+    // is easier to express directly here.)
     let slot_a = next_id + 1u64;
     let slot_b = next_id + 2u64;
     next_id = slot_b;

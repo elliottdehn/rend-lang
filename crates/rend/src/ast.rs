@@ -622,6 +622,19 @@ pub enum ExprKind {
     },
     Index { target: Box<Expr>, key: Box<Expr> },
     Array(Vec<Expr>),
+    /// `arr<T>[N]` — allocates a `[T]` of length `N` filled with
+    /// `T`'s default value. Distinct from an array literal because
+    /// the count is a runtime expression and the elements never
+    /// appear in source. The natural output buffer for a
+    /// `parallel for ... to` block.
+    ArrayAlloc { elem_ty: Type, len: Box<Expr> },
+    /// `reserve <count_expr> from <state_ident>` — atomically reads
+    /// the named u64 state cell, bumps it by `count`, and yields a
+    /// `[u64]` of the reserved ids (`previous_state + 1 .. + count`).
+    /// One read + one write on the contended counter; the produced
+    /// array carries the reservation outward and can be iterated /
+    /// indexed normally.
+    Reserve { count: Box<Expr>, state: String },
     StructLit { name: String, fields: Vec<(String, Expr)> },
     Field { target: Box<Expr>, name: String },
     /// Pipe stage: `head |> step` evaluates `head`, binds its value to `$$`

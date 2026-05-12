@@ -84,7 +84,7 @@ pub fn run_world(
     // ends up with an empty pending queue and the return value is
     // fully resolved.
     tx.set_lazy(true);
-    let mut state = VmState { fuel: fuel.remaining, host, tx, modules };
+    let mut state = VmState { fuel: fuel.remaining, host, tx, modules, parallel_skip: false };
     let result = state.call(main_idx, fn_idx, args);
     let result = result.map(|v| state.tx.force(v));
     state.tx.flush_pending();
@@ -97,6 +97,12 @@ struct VmState<'a, 'tx> {
     host: &'a Host,
     tx: &'a mut Tx<'tx>,
     modules: &'a [BcModule],
+    /// Set by a leg of `parallel for ... to { ... continue ... }` to
+    /// signal the dispatcher that this iteration should skip its
+    /// output slot (leaving the default value). The dispatcher
+    /// reads this flag after `call_body_at` returns and ignores
+    /// the returned value when it's set.
+    parallel_skip: bool,
 }
 
 impl<'a, 'tx> VmState<'a, 'tx> {
@@ -159,6 +165,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     host,
                     tx: &mut shadow,
                     modules,
+                    parallel_skip: false,
                 };
                 sub.call(*mi, *hi as usize, std::slice::from_ref(struct_val))?;
                 let fuel_used = fuel_budget.saturating_sub(sub.fuel);
@@ -183,6 +190,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     host: self.host,
                     tx: &mut shadow,
                     modules: self.modules,
+                    parallel_skip: false,
                 };
                 sub.call(mi, hi as usize, std::slice::from_ref(struct_val))?;
                 let rerun_used = pre.saturating_sub(sub.fuel);
@@ -584,6 +592,48 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     }
                     regs[dst as usize] = Value::Array(elems);
                 }
+                Instr::ArrayAlloc { dst, len_reg, default_reg } => {
+                    let len_v = self.force_reg(&mut regs, len_reg);
+                    let n = value_to_usize_arr(&len_v).ok_or_else(|| Error::new(
+                        ErrorKind::Runtime,
+                        format!("`arr<T>[N]` length must be a non-negative integer, got {len_v}"),
+                        Span::default(),
+                    ))?;
+                    let default = self.force_reg(&mut regs, default_reg);
+                    regs[dst as usize] = Value::Array(vec![default; n]);
+                }
+                Instr::Reserve { dst, state_idx, count_reg } => {
+                    let count_v = self.force_reg(&mut regs, count_reg);
+                    let n = value_to_u64_arr(&count_v).ok_or_else(|| Error::new(
+                        ErrorKind::Runtime,
+                        format!("`reserve N from ...` count must be a non-negative integer, got {count_v}"),
+                        Span::default(),
+                    ))?;
+                    let state_root = module.state_roots[state_idx as usize];
+                    // Bypass lazy ReadBatch: read_typed_many forces a
+                    // direct round-trip and returns a resolved Value
+                    // (otherwise `Reserve` running before any other
+                    // read of the counter could see a Pending handle).
+                    let prev_v = self.tx
+                        .read_typed_many(&[(state_root, crate::ast::Type::U64)])
+                        .into_iter()
+                        .next()
+                        .unwrap();
+                    let prev = match prev_v {
+                        Value::U64(p) => p,
+                        other => return Err(Error::new(
+                            ErrorKind::Runtime,
+                            format!("`reserve ... from <state>`: state must be u64, got {other}"),
+                            Span::default(),
+                        )),
+                    };
+                    self.tx.write_typed(state_root, &crate::ast::Type::U64, Value::U64(prev + n));
+                    let mut out = Vec::with_capacity(n as usize);
+                    for i in 0..n {
+                        out.push(Value::U64(prev + i + 1));
+                    }
+                    regs[dst as usize] = Value::Array(out);
+                }
                 Instr::MakeStruct { dst, shape_idx, args_start, n } => {
                     let shape = &module.struct_shapes[shape_idx as usize];
                     let mut fields = Vec::with_capacity(n as usize);
@@ -915,6 +965,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                                     host,
                                     tx: &mut shadow,
                                     modules,
+                    parallel_skip: false,
                                 };
                                 let value = sub.call_body_at(
                                     module_idx,
@@ -942,6 +993,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                                 host: self.host,
                                 tx: &mut shadow,
                                 modules: self.modules,
+                    parallel_skip: false,
                             };
                             let v = sub.call_body_at(
                                 module_idx,
@@ -974,6 +1026,16 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         Some(r) => Ok(self.force_reg(&mut regs, r)),
                         None => Ok(Value::Unit),
                     };
+                }
+                Instr::ParallelForSkip => {
+                    // Body of a `parallel for ... to` block reached
+                    // `continue`. Set the skip flag the dispatcher
+                    // checks after collecting the leg's result, then
+                    // return a Unit placeholder (which the
+                    // dispatcher will ignore in favor of the
+                    // buffer's default slot value).
+                    self.parallel_skip = true;
+                    return Ok(Value::Unit);
                 }
                 Instr::ParallelForBegin {
                     body_start, body_end: _, source_reg, output_reg, id_reg, after_pc,
@@ -1016,10 +1078,10 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     let fuel_budget = self.fuel;
                     let parent: &Tx = &*self.tx;
                     let body_start_pc = body_start as usize;
-                    let results: Vec<Result<(crate::tx::HandlerDelta, Value, u64), Error>> =
+                    let results: Vec<Result<(crate::tx::HandlerDelta, Value, u64, bool), Error>> =
                         (0..n)
                             .into_par_iter()
-                            .map(|i| -> Result<(crate::tx::HandlerDelta, Value, u64), Error> {
+                            .map(|i| -> Result<(crate::tx::HandlerDelta, Value, u64, bool), Error> {
                                 let mut leg_regs = regs_snapshot.clone();
                                 leg_regs[id_reg as usize] = source_elems[i].clone();
                                 let mut shadow = Tx::shadow_of(parent);
@@ -1028,6 +1090,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                                     host,
                                     tx: &mut shadow,
                                     modules,
+                                    parallel_skip: false,
                                 };
                                 let value = sub.call_body_at(
                                     module_idx,
@@ -1036,18 +1099,19 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                                     body_start_pc,
                                 )?;
                                 let fuel_used = fuel_budget.saturating_sub(sub.fuel);
-                                Ok((shadow.into_delta(), value, fuel_used))
+                                let skip = sub.parallel_skip;
+                                Ok((shadow.into_delta(), value, fuel_used, skip))
                             })
                             .collect();
                     // Stable-order merge with conflict re-run.
                     let mut batch_writes: std::collections::HashSet<u128> =
                         std::collections::HashSet::new();
                     for (i, res) in results.into_iter().enumerate() {
-                        let (delta, value, fuel_used) = res?;
+                        let (delta, value, fuel_used, skip) = res?;
                         self.fuel = self.fuel.saturating_sub(fuel_used);
                         let conflict =
                             delta.reads.keys().any(|k| batch_writes.contains(k));
-                        let (final_delta, final_value) = if conflict {
+                        let (final_delta, final_value, final_skip) = if conflict {
                             // Re-run this leg against the merged parent.
                             let mut leg_regs = regs.clone();
                             leg_regs[id_reg as usize] = source_elems[i].clone();
@@ -1058,6 +1122,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                                 host: self.host,
                                 tx: &mut shadow,
                                 modules: self.modules,
+                                parallel_skip: false,
                             };
                             let v = sub.call_body_at(
                                 module_idx,
@@ -1067,16 +1132,21 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             )?;
                             let used = pre.saturating_sub(sub.fuel);
                             self.fuel = self.fuel.saturating_sub(used);
-                            (shadow.into_delta(), v)
+                            let rerun_skip = sub.parallel_skip;
+                            (shadow.into_delta(), v, rerun_skip)
                         } else {
-                            (delta, value)
+                            (delta, value, skip)
                         };
                         batch_writes.extend(final_delta.writes.keys().copied());
                         self.tx.merge_delta(final_delta);
                         // Output slot disjoint by construction; the
                         // dispatcher writes back into the buffer in
-                        // index order. Nothing to reconcile here.
-                        output_elems[i] = final_value;
+                        // index order. `continue` inside the body
+                        // sets `parallel_skip`, signaling that this
+                        // slot should retain its default value.
+                        if !final_skip {
+                            output_elems[i] = final_value;
+                        }
                     }
                     regs[output_reg as usize] = Value::Array(output_elems);
                     pc = after_pc as usize;
@@ -2050,4 +2120,25 @@ pub fn eval_bin(op: BinOp, l: Value, r: Value) -> Result<Value, Error> {
 #[allow(dead_code)]
 pub fn eval_un(op: UnOp, v: Value) -> Result<Value, Error> {
     crate::ops::eval_unary(op, v, Span::default())
+}
+
+/// Coerce a Value carrying a non-negative integer to u64. Mirrors
+/// the helper in interp.rs; lives here so the bytecode VM doesn't
+/// reach across modules. Returns None for non-integer or negative
+/// values — caller raises the user-visible error.
+fn value_to_u64_arr(v: &Value) -> Option<u64> {
+    use num_traits::ToPrimitive;
+    match v {
+        Value::U64(n) => Some(*n),
+        Value::U32(n) => Some(*n as u64),
+        Value::I32(n) if *n >= 0 => Some(*n as u64),
+        Value::U128(n) => (*n).try_into().ok(),
+        Value::Int(n) => n.to_u64(),
+        Value::UInt(n) => n.to_u64(),
+        _ => None,
+    }
+}
+
+fn value_to_usize_arr(v: &Value) -> Option<usize> {
+    value_to_u64_arr(v).and_then(|n| n.try_into().ok())
 }

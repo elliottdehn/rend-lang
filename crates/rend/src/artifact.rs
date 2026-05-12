@@ -905,6 +905,9 @@ mod op {
     pub const PARALLEL_BEGIN: u8       = 0x49;
     pub const PARALLEL_YIELD: u8       = 0x4a;
     pub const PARALLEL_FOR_BEGIN: u8   = 0x4b;
+    pub const ARRAY_ALLOC: u8          = 0x4c;
+    pub const RESERVE: u8              = 0x4d;
+    pub const PARALLEL_FOR_SKIP: u8    = 0x4e;
 }
 
 fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
@@ -1020,6 +1023,19 @@ fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
             write_u16(out, *id_reg);
             write_u32(out, *after_pc);
         }
+        Instr::ArrayAlloc { dst, len_reg, default_reg } => {
+            out.push(op::ARRAY_ALLOC);
+            write_u16(out, *dst);
+            write_u16(out, *len_reg);
+            write_u16(out, *default_reg);
+        }
+        Instr::Reserve { dst, state_idx, count_reg } => {
+            out.push(op::RESERVE);
+            write_u16(out, *dst);
+            write_u16(out, *state_idx);
+            write_u16(out, *count_reg);
+        }
+        Instr::ParallelForSkip => { out.push(op::PARALLEL_FOR_SKIP); }
         Instr::Context { dst, kind } => { out.push(op::CONTEXT); write_u16(out, *dst); out.push(*kind); }
         Instr::MakeTuple { dst, args_start, n } => {
             out.push(op::MAKE_TUPLE); write_u16(out, *dst); write_u16(out, *args_start); write_u16(out, *n);
@@ -1264,6 +1280,17 @@ fn read_instr(r: &mut Reader) -> Result<Instr, Error> {
                 body_start, body_end, source_reg, output_reg, id_reg, after_pc,
             }
         }
+        op::ARRAY_ALLOC => Instr::ArrayAlloc {
+            dst: r.read_u16()?,
+            len_reg: r.read_u16()?,
+            default_reg: r.read_u16()?,
+        },
+        op::RESERVE => Instr::Reserve {
+            dst: r.read_u16()?,
+            state_idx: r.read_u16()?,
+            count_reg: r.read_u16()?,
+        },
+        op::PARALLEL_FOR_SKIP => Instr::ParallelForSkip,
         op::CONTEXT => Instr::Context { dst: r.read_u16()?, kind: r.read_u8()? },
         op::MAKE_TUPLE => Instr::MakeTuple { dst: r.read_u16()?, args_start: r.read_u16()?, n: r.read_u16()? },
         op::TUPLE_GET  => Instr::TupleGet  { dst: r.read_u16()?, src: r.read_u16()?, index: r.read_u16()? },

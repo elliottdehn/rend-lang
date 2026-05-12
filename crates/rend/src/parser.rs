@@ -1747,6 +1747,54 @@ impl Parser {
                     span: Span { start, end: close.end },
                 })
             }
+            Token::Reserve => {
+                // `reserve <count_expr> from <state_ident>`
+                let start = span.start;
+                self.advance();
+                let saved = self.no_struct_literal;
+                self.no_struct_literal = true;
+                let count = self.parse_expr()?;
+                self.no_struct_literal = saved;
+                // `from` is a contextual keyword — lexed as Ident("from")
+                // everywhere else, recognized here so user code keeps `from`
+                // free as a parameter or local name.
+                match self.peek_token() {
+                    Token::Ident(s) if s == "from" => { self.advance(); }
+                    _ => {
+                        let span = self.cur_span();
+                        return Err(Error::new(
+                            ErrorKind::Parse,
+                            "expected 'from' after `reserve N`",
+                            span,
+                        ));
+                    }
+                }
+                let state_name = self.expect_ident()?;
+                let end = self.cur_span().start;
+                return Ok(Expr {
+                    kind: ExprKind::Reserve { count: Box::new(count), state: state_name },
+                    span: Span { start, end },
+                });
+            }
+            Token::Arr => {
+                // `arr<T>[<len_expr>]`
+                let start = span.start;
+                self.advance();
+                self.expect(Token::Lt, "expected '<' after 'arr'")?;
+                let elem_ty = self.parse_type()?;
+                self.expect(Token::Gt, "expected '>' after 'arr<T'")?;
+                self.expect(Token::LBracket, "expected '[' after 'arr<T>'")?;
+                let saved = self.no_struct_literal;
+                self.no_struct_literal = true;
+                let len = self.parse_expr()?;
+                self.no_struct_literal = saved;
+                let close = self.cur_span();
+                self.expect(Token::RBracket, "expected ']' to close arr<T>[N]")?;
+                return Ok(Expr {
+                    kind: ExprKind::ArrayAlloc { elem_ty, len: Box::new(len) },
+                    span: Span { start, end: close.end },
+                });
+            }
             Token::Set => {
                 let start = span.start;
                 self.advance();

@@ -345,6 +345,12 @@ fn classify_expr(expr: &Expr, acc: &mut EffectClass, ctx: &Ctx) {
             classify_expr(target, acc, ctx);
         }
         ExprKind::Array(elems) => for e in elems { classify_expr(e, acc, ctx); },
+        ExprKind::ArrayAlloc { len, .. } => classify_expr(len, acc, ctx),
+        ExprKind::Reserve { count, .. } => {
+            // Reads + bumps the named u64 state cell → WriteOnly effect.
+            *acc = acc.join(EffectClass::WriteOnly);
+            classify_expr(count, acc, ctx);
+        }
         ExprKind::SetLit(elems) => for e in elems { classify_expr(e, acc, ctx); },
         ExprKind::DictLit(pairs) => for (k, v) in pairs {
             classify_expr(k, acc, ctx);

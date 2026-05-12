@@ -72,6 +72,25 @@ fn example_48_multi_symbol_order_book_uses_three_field_composite() {
 }
 
 #[test]
+fn example_51_reserve_plus_arr_plus_parallel_for_to_dispatch() {
+    // Slice 2 of the parallel-for-to feature: `reserve N from
+    // state` returns a fresh [u64] of reserved ids (one atomic
+    // counter bump); `arr<T>[N]` allocates a default-filled
+    // output buffer; `parallel for id in src to out { body }`
+    // dispatches N legs in parallel, with `continue` skipping
+    // the output slot but preserving any state writes the body
+    // performed before the skip.
+    //
+    // Trace: 5 ids reserved, body writes entities[id] = id*1000
+    // for each, then `continue` on id==3 (so timestamps[2] stays
+    // at 0). next_id=5; timestamps sum=12_000; entities[3]=3000.
+    //   5 * 100_000 + 12_000 * 10 + 1 = 620_001.
+    let src = std::fs::read_to_string("examples/51_parallel_for_reserve.rd").unwrap();
+    let out = rend::run(&src).unwrap();
+    assert_eq!(out, Value::U64(620_001));
+}
+
+#[test]
 fn example_50_string_dedup_uses_disjoint_pmap_plus_parallel_batch_path() {
     // Interning maps each distinct string to a fresh u64 id.
     // `forward: pmap<string, u64>` is HAMT-disjoint per key, so

@@ -344,6 +344,8 @@ impl<'a> Lexer<'a> {
             "DESC" => Token::Desc,
             "on" => Token::On,
             "delete" => Token::Delete,
+            "reserve" => Token::Reserve,
+            "arr" => Token::Arr,
             _ => Token::Ident(s.to_string()),
         }
     }

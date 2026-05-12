@@ -262,6 +262,14 @@ fn reads_pending_dst(instr: &Instr, pending: &HashSet<u16>) -> bool {
             srcs.push(*source_reg);
             srcs.push(*output_reg);
         }
+        Instr::ArrayAlloc { len_reg, default_reg, .. } => {
+            srcs.push(*len_reg);
+            srcs.push(*default_reg);
+        }
+        Instr::Reserve { count_reg, .. } => {
+            srcs.push(*count_reg);
+        }
+        Instr::ParallelForSkip => {}
         Instr::Context { .. } => {}
         Instr::MakeTuple { args_start, n, .. } => {
             for i in 0..*n { srcs.push(args_start + i); }
@@ -419,6 +427,14 @@ fn cluster_breaker(
         // can't reach into them.
         Instr::ParallelBegin { .. } | Instr::ParallelYield { .. } => true,
         Instr::ParallelForBegin { .. } => true,
+        // Reserve writes a state cell — a definite barrier. ArrayAlloc is a
+        // pure register op but appears next to Reserve in workflows where
+        // ordering matters; treat it as a barrier conservatively for now.
+        Instr::Reserve { .. } => true,
+        Instr::ArrayAlloc { .. } => false,
+        // Parallel-for-skip terminates a leg without writing back —
+        // a control-flow barrier.
+        Instr::ParallelForSkip => true,
         // Context reads are pure constants per-tx; never break.
         Instr::Context { .. } => false,
         // Tuple construct/extract are pure register ops.
