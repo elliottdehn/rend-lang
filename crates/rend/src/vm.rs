@@ -951,15 +951,10 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                                 Span::default(),
                             )),
                         },
-                        Value::Int(n) => return Err(Error::new(
-                            ErrorKind::Runtime,
-                            format!("pvec index must be non-negative, got {n}"),
-                            Span::default(),
-                        )),
                         Value::U64(n) => n,
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
-                            format!("pvec index must be i64 or u64, got {other}"),
+                            format!("pvec index must be int or u64, got {other}"),
                             Span::default(),
                         )),
                     };
@@ -1531,22 +1526,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 }
                 Instr::IncReg { reg } => {
                     let v = self.force_reg(&mut regs, reg);
-                    regs[reg as usize] = match v {
-                        Value::Int(n)  => Value::Int(n + 1),
-                        Value::I32(n)  => Value::I32(n.checked_add(1).ok_or_else(|| Error::new(
-                            ErrorKind::Runtime, "integer overflow", Span::default()))?),
-                        Value::U32(n)  => Value::U32(n.checked_add(1).ok_or_else(|| Error::new(
-                            ErrorKind::Runtime, "integer overflow", Span::default()))?),
-                        Value::U64(n)  => Value::U64(n.checked_add(1).ok_or_else(|| Error::new(
-                            ErrorKind::Runtime, "integer overflow", Span::default()))?),
-                        Value::U128(n) => Value::U128(n.checked_add(1).ok_or_else(|| Error::new(
-                            ErrorKind::Runtime, "integer overflow", Span::default()))?),
-                        other => return Err(Error::new(
-                            ErrorKind::Runtime,
-                            format!("IncReg on non-integer value: {other}"),
-                            Span::default(),
-                        )),
-                    };
+                    regs[reg as usize] = crate::ops::inc(v, Span::default())?;
                 }
             }
         }

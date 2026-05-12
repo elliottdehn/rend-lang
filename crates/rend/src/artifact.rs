@@ -1226,7 +1226,9 @@ fn write_u32(out: &mut Vec<u8>, v: u32) { out.extend_from_slice(&v.to_be_bytes()
 fn write_u64(out: &mut Vec<u8>, v: u64) { out.extend_from_slice(&v.to_be_bytes()); }
 fn write_u128(out: &mut Vec<u8>, v: u128) { out.extend_from_slice(&v.to_be_bytes()); }
 fn write_i32(out: &mut Vec<u8>, v: i32) { out.extend_from_slice(&v.to_be_bytes()); }
-fn write_i64(out: &mut Vec<u8>, v: i64) { out.extend_from_slice(&v.to_be_bytes()); }
+// `write_i64` / `read_i64` retired with the BigInt rewrite — Int /
+// Resource use BigInt-based encoding now and other 8-byte values
+// have their own helpers.
 
 fn write_str(out: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
@@ -1285,10 +1287,6 @@ impl<'a> Reader<'a> {
     fn read_i32(&mut self) -> Result<i32, Error> {
         let arr: [u8; 4] = self.take_bytes(4)?.try_into().unwrap();
         Ok(i32::from_be_bytes(arr))
-    }
-    fn read_i64(&mut self) -> Result<i64, Error> {
-        let arr: [u8; 8] = self.take_bytes(8)?.try_into().unwrap();
-        Ok(i64::from_be_bytes(arr))
     }
 }
 

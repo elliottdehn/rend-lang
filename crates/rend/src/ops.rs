@@ -183,6 +183,29 @@ pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, E
     }
 }
 
+/// Increment a numeric value by one. The single dispatch point for
+/// "+1" across every numeric variant — vm.rs's `IncReg` and
+/// anywhere else that wants a typed increment goes through here so
+/// adding a new numeric variant means touching one match, not many.
+pub fn inc(v: Value, span: Span) -> Result<Value, Error> {
+    use crate::value::F64Bits;
+    let overflow = || Error::new(ErrorKind::Runtime, "integer overflow", span);
+    match v {
+        Value::Int(n)   => Ok(Value::Int(n + 1)),
+        Value::UInt(n)  => Ok(Value::UInt(n + 1u32)),
+        Value::Float(n) => Ok(Value::Float(F64Bits(n.to_f64() + 1.0))),
+        Value::I32(n)   => n.checked_add(1).map(Value::I32).ok_or_else(overflow),
+        Value::U32(n)   => n.checked_add(1).map(Value::U32).ok_or_else(overflow),
+        Value::U64(n)   => n.checked_add(1).map(Value::U64).ok_or_else(overflow),
+        Value::U128(n)  => n.checked_add(1).map(Value::U128).ok_or_else(overflow),
+        other => Err(Error::new(
+            ErrorKind::Runtime,
+            format!("IncReg on non-numeric value: {other}"),
+            span,
+        )),
+    }
+}
+
 pub fn eval_unary(op: UnOp, v: Value, span: Span) -> Result<Value, Error> {
     let overflow = || Error::new(ErrorKind::Runtime, "integer overflow", span);
     match (op, v) {
