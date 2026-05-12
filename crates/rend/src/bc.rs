@@ -129,6 +129,7 @@ pub enum ReadOp {
 pub enum Const {
     Int(num_bigint::BigInt),
     UInt(num_bigint::BigInt),
+    Float(crate::value::F64Bits),
     I32(i32),
     U32(u32),
     U64(u64),

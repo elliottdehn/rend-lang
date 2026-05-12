@@ -7,6 +7,8 @@ pub enum Token {
     Int(num_bigint::BigInt),
     /// `42u` literal — arbitrary-precision non-negative integer.
     UInt(num_bigint::BigInt),
+    /// `3.14` / `1.5e10` / `1e-3` literal — IEEE-754 double.
+    Float(crate::value::F64Bits),
     I32(i32),
     U32(u32),
     U64(u64),

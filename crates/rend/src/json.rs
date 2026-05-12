@@ -30,6 +30,8 @@
 use num_bigint::BigInt;
 use std::fmt;
 
+pub use crate::value::F64Bits;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Json {
     Null,
@@ -53,23 +55,9 @@ pub enum Json {
     Object(Vec<(String, Json)>),
 }
 
-/// `f64` wrapper that compares by bit pattern. Lets `Json` remain
-/// `Eq`. NaN compares equal to NaN here, which is intentional for
-/// the structural-equality use cases we have (content-addressed
-/// cells, test assertions); arithmetic users should `to_f64()`.
-#[derive(Debug, Clone, Copy)]
-pub struct F64Bits(pub f64);
-
-impl F64Bits {
-    pub fn to_f64(self) -> f64 { self.0 }
-}
-
-impl PartialEq for F64Bits {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.to_bits() == other.0.to_bits()
-    }
-}
-impl Eq for F64Bits {}
+// `F64Bits` is the shared wrapper from `crate::value` (re-exported
+// above) — both `Value::Float` and (the soon-to-be-removed)
+// `Json::Float` use the same type.
 
 impl Json {
     /// Object key access. Missing key → `None`. Non-object → `None`.

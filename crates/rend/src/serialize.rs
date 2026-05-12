@@ -37,6 +37,7 @@ const TAG_INTERFACE: u8 = 0x18;
 const TAG_PBTREE: u8 = 0x19;
 const TAG_JSON: u8 = 0x1a;
 const TAG_UINT: u8 = 0x1b;
+const TAG_FLOAT: u8 = 0x1c;
 
 pub fn serialize(value: &Value) -> Vec<u8> {
     match value {
@@ -62,6 +63,15 @@ pub fn serialize(value: &Value) -> Vec<u8> {
             out.push(TAG_UINT);
             out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             out.extend_from_slice(&bytes);
+            out
+        }
+        Value::Float(n) => {
+            // 8 BE bytes IEEE-754 double. NaN bit-patterns are
+            // preserved (`F64Bits` is bit-pattern equal so a stored
+            // NaN reads back as the same NaN).
+            let mut out = Vec::with_capacity(9);
+            out.push(TAG_FLOAT);
+            out.extend_from_slice(&n.to_f64().to_be_bytes());
             out
         }
         Value::I32(n) => {
@@ -239,6 +249,10 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
             if rest.len() != 4 + n_bytes { return None; }
             Some(Value::UInt(num_bigint::BigInt::from_signed_bytes_be(&rest[4..])))
         }
+        (TAG_FLOAT, Type::Float) => {
+            let arr: [u8; 8] = rest.try_into().ok()?;
+            Some(Value::Float(crate::value::F64Bits(f64::from_be_bytes(arr))))
+        }
         (TAG_I32, Type::I32) => {
             let arr: [u8; 4] = rest.try_into().ok()?;
             Some(Value::I32(i32::from_be_bytes(arr)))
@@ -384,6 +398,7 @@ fn sized_value(bytes: &[u8], ty: &Type) -> Option<usize> {
             let n = u32::from_be_bytes(len_bytes) as usize;
             Some(1 + 4 + n)
         }
+        (TAG_FLOAT, Type::Float) => Some(1 + 8),
         (TAG_RESOURCE, Type::Resource) => Some(1 + 8),
         (TAG_I32, Type::I32) | (TAG_U32, Type::U32) => Some(1 + 4),
         (TAG_U64, Type::U64) => Some(1 + 8),
@@ -458,6 +473,8 @@ pub fn is_default(value: &Value) -> bool {
     match value {
         Value::Int(n) if n.is_zero() => true,
         Value::UInt(n) if n.is_zero() => true,
+        // Default-Float is +0.0. NaN, ±Inf, and -0.0 are NOT defaults.
+        Value::Float(crate::value::F64Bits(n)) if *n == 0.0 && n.is_sign_positive() => true,
         Value::I32(0) => true,
         Value::U32(0) => true,
         Value::U64(0) => true,

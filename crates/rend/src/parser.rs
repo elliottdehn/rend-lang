@@ -608,6 +608,7 @@ impl Parser {
                 match s.as_str() {
                     "i64" | "int" => Ok(Type::Int),
                     "uint" => Ok(Type::UInt),
+                    "float" => Ok(Type::Float),
                     "i32" => Ok(Type::I32),
                     "u32" => Ok(Type::U32),
                     "u64" => Ok(Type::U64),
@@ -1423,6 +1424,10 @@ impl Parser {
             Token::UInt(n) => {
                 self.advance();
                 Ok(Expr { kind: ExprKind::UInt(n), span })
+            }
+            Token::Float(n) => {
+                self.advance();
+                Ok(Expr { kind: ExprKind::Float(n), span })
             }
             Token::I32(n) => {
                 self.advance();

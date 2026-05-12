@@ -142,6 +142,34 @@ fn modulo_by_zero_is_runtime_error() {
 }
 
 #[test]
+fn float_literal_and_arithmetic() {
+    use rend::value::F64Bits;
+    assert_runs_to(
+        "fn main() -> float { return 1.5 + 0.25; }",
+        rend::Value::Float(F64Bits(1.75)),
+    );
+    assert_runs_to(
+        "fn main() -> float { return 1e10 + 5e9; }",
+        rend::Value::Float(F64Bits(1.5e10)),
+    );
+    assert_runs_to(
+        "fn main() -> bool { return 0.1 + 0.2 == 0.3; }",
+        // Classic IEEE-754 trap — included to assert we *do* expose
+        // standard float semantics rather than silently lying.
+        rend::Value::Bool(false),
+    );
+}
+
+#[test]
+fn float_division_by_zero_is_inf_not_error() {
+    use rend::value::F64Bits;
+    assert_runs_to(
+        "fn main() -> float { return 1.0 / 0.0; }",
+        rend::Value::Float(F64Bits(f64::INFINITY)),
+    );
+}
+
+#[test]
 fn uint_literal_and_arithmetic() {
     assert_runs_to(
         "fn main() -> uint { return 5u + 3u; }",

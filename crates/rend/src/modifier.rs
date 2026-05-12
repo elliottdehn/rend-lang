@@ -255,7 +255,7 @@ fn substitute_in_expr(expr: &mut Expr, subst: &HashMap<String, Expr>) {
                 ElseBranch::If(inner) => substitute_in_if(inner, subst),
             }
         }
-        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::I32(_) | ExprKind::U32(_) | ExprKind::U64(_)
+        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::Float(_) | ExprKind::I32(_) | ExprKind::U32(_) | ExprKind::U64(_)
         | ExprKind::U128(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Ident(_)
         | ExprKind::Prev => {}
     }

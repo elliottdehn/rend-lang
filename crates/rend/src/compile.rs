@@ -1640,6 +1640,11 @@ impl<'a> FnCompiler<'a> {
                 self.code.push(Instr::LoadConst { dst, idx });
                 Ok(())
             }
+            ExprKind::Float(n) => {
+                let idx = self.const_idx(Const::Float(*n));
+                self.code.push(Instr::LoadConst { dst, idx });
+                Ok(())
+            }
             ExprKind::I32(n) => {
                 let idx = self.const_idx(Const::I32(*n));
                 self.code.push(Instr::LoadConst { dst, idx });

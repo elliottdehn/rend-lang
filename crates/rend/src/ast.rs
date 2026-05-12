@@ -248,6 +248,10 @@ pub enum Type {
     /// with the `u` suffix (e.g. `42u`) have this type. Subtraction
     /// that would go negative is a runtime error.
     UInt,
+    /// `float`. IEEE-754 double. Source literals with `.`, `e`, or
+    /// `E` parse here. Arithmetic follows IEEE-754 — division by
+    /// zero produces inf/nan rather than erroring.
+    Float,
     I32,
     U32,
     U64,
@@ -340,7 +344,8 @@ impl Type {
     /// Non-Copy types (currently just Resource) participate in affine analysis.
     pub fn is_copy(&self) -> bool {
         match self {
-            Type::Int | Type::UInt | Type::I32 | Type::U32 | Type::U64 | Type::U128
+            Type::Int | Type::UInt | Type::Float
+            | Type::I32 | Type::U32 | Type::U64 | Type::U128
             | Type::Bool | Type::Unit | Type::String | Type::Address | Type::Bytes => true,
             Type::Array(elem) => elem.is_copy(),
             Type::Set(elem) => elem.is_copy(),
@@ -385,6 +390,7 @@ impl std::fmt::Display for Type {
         match self {
             Type::Int => write!(f, "int"),
             Type::UInt => write!(f, "uint"),
+            Type::Float => write!(f, "float"),
             Type::I32 => write!(f, "i32"),
             Type::U32 => write!(f, "u32"),
             Type::U64 => write!(f, "u64"),
@@ -503,6 +509,7 @@ pub struct Expr {
 pub enum ExprKind {
     Int(num_bigint::BigInt),
     UInt(num_bigint::BigInt),
+    Float(crate::value::F64Bits),
     I32(i32),
     U32(u32),
     U64(u64),

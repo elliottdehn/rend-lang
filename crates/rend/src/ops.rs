@@ -121,6 +121,33 @@ fn bigint_arith(
     }
 }
 
+/// IEEE-754 double arithmetic. No errors at this layer — division
+/// by zero yields ±inf or NaN per the standard, and overflow
+/// saturates to ±inf. Comparison ops follow IEEE-754 (NaN is
+/// unequal to everything, including itself).
+fn float_arith(op: BinOp, a: f64, b: f64, span: Span) -> Result<Value, Error> {
+    use crate::value::F64Bits;
+    let bad = || Error::new(
+        ErrorKind::Runtime,
+        format!("operator {op:?} not defined for float values"),
+        span,
+    );
+    match op {
+        BinOp::Add => Ok(Value::Float(F64Bits(a + b))),
+        BinOp::Sub => Ok(Value::Float(F64Bits(a - b))),
+        BinOp::Mul => Ok(Value::Float(F64Bits(a * b))),
+        BinOp::Div => Ok(Value::Float(F64Bits(a / b))),
+        BinOp::Mod => Ok(Value::Float(F64Bits(a % b))),
+        BinOp::Lt    => Ok(Value::Bool(a < b)),
+        BinOp::Gt    => Ok(Value::Bool(a > b)),
+        BinOp::LtEq  => Ok(Value::Bool(a <= b)),
+        BinOp::GtEq  => Ok(Value::Bool(a >= b)),
+        BinOp::Eq    => Ok(Value::Bool(a == b)),
+        BinOp::NotEq => Ok(Value::Bool(a != b)),
+        _ => Err(bad()),
+    }
+}
+
 pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, Error> {
     use Value::*;
     let mismatch = || {
@@ -134,6 +161,7 @@ pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, E
     match (&l, &r) {
         (Int(a),  Int(b))  => bigint_arith(op, a, b, span, false),
         (UInt(a), UInt(b)) => bigint_arith(op, a, b, span, true),
+        (Float(a), Float(b)) => float_arith(op, a.to_f64(), b.to_f64(), span),
         (I32(a),  I32(b))  => int_arith!(op, a, b, I32,  span),
         (U32(a),  U32(b))  => int_arith!(op, a, b, U32,  span),
         (U64(a),  U64(b))  => int_arith!(op, a, b, U64,  span),
@@ -163,6 +191,7 @@ pub fn eval_unary(op: UnOp, v: Value, span: Span) -> Result<Value, Error> {
             if n.is_zero() { Ok(Value::UInt(n)) }
             else { Err(Error::new(ErrorKind::Runtime, "uint underflow on negation", span)) }
         }
+        (UnOp::Neg, Value::Float(n)) => Ok(Value::Float(crate::value::F64Bits(-n.to_f64()))),
         (UnOp::Neg, Value::I32(n)) => n.checked_neg().map(Value::I32).ok_or_else(overflow),
         (UnOp::Neg, Value::U32(0)) => Ok(Value::U32(0)),
         (UnOp::Neg, Value::U32(_)) => Err(overflow()),

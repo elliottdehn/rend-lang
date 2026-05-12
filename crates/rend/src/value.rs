@@ -3,6 +3,33 @@
 use crate::ast::Type;
 use num_bigint::BigInt;
 
+/// `f64` wrapper that compares by bit pattern. Wraps `f64` for the
+/// purposes of fitting inside a `PartialEq+Eq+Hash` enum (which
+/// `Value` and `Json` both want). Two NaNs with identical bit
+/// patterns are equal here — which is what we want for
+/// content-addressed cell hashing and structural test assertions.
+/// Code that wants standard IEEE-754 comparison reaches for
+/// `.to_f64()` and compares as a regular `f64`.
+#[derive(Debug, Clone, Copy)]
+pub struct F64Bits(pub f64);
+
+impl F64Bits {
+    pub fn to_f64(self) -> f64 { self.0 }
+}
+
+impl PartialEq for F64Bits {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+impl Eq for F64Bits {}
+
+impl std::hash::Hash for F64Bits {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     /// Arbitrary-precision signed integer. The default integer type
@@ -15,6 +42,12 @@ pub enum Value {
     /// arithmetic operators — subtraction that would go negative is
     /// a runtime error. Literal form: `42u`.
     UInt(BigInt),
+    /// IEEE-754 double. Source literals like `3.14`, `1.5e10`,
+    /// `1e-3` parse here. Equality on `Value` compares by bit
+    /// pattern (via `F64Bits`) so `Value: Eq` survives —
+    /// arithmetic comparisons inside the language follow standard
+    /// IEEE-754 semantics (NaN != NaN, +0.0 == -0.0).
+    Float(F64Bits),
     I32(i32),
     U32(u32),
     U64(u64),
@@ -152,6 +185,7 @@ impl Value {
         match ty {
             Type::Int => Value::int(0),
             Type::UInt => Value::uint(0u32),
+            Type::Float => Value::Float(F64Bits(0.0)),
             Type::I32 => Value::I32(0),
             Type::U32 => Value::U32(0),
             Type::U64 => Value::U64(0),
@@ -226,6 +260,18 @@ impl std::fmt::Display for Value {
         match self {
             Value::Int(n) => write!(f, "{n}"),
             Value::UInt(n) => write!(f, "{n}u"),
+            Value::Float(F64Bits(n)) => {
+                // Mirror the JSON canonical-render rule: integer-
+                // valued floats keep a `.0` so the text round-trips
+                // back to Float at the parser. NaN / Inf are
+                // displayed using Rust's defaults (`NaN`, `inf`).
+                let s = format!("{n}");
+                if n.is_finite() && !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    write!(f, "{s}.0")
+                } else {
+                    write!(f, "{s}")
+                }
+            }
             Value::I32(n) => write!(f, "{n}i32"),
             Value::U32(n) => write!(f, "{n}u32"),
             Value::U64(n) => write!(f, "{n}u64"),

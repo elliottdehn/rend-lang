@@ -204,6 +204,55 @@ impl<'a> Lexer<'a> {
         let digits_end = self.pos;
         let digits = &self.src[start..digits_end];
 
+        // If the next chars look like float syntax (`.digit`, `e`,
+        // `E`), consume them and return a `Float` token. `.foo` and
+        // `.0` (tuple-index) are *not* floats — the `.` has to be
+        // followed by a digit. `1e10` and `1e-3` are floats even
+        // without a `.`.
+        //
+        // Disambiguation for tuple-index chains: in `p.0.0`, the
+        // bytes after `p.` are `0.0`, which would otherwise parse
+        // as `Float(0.0)`. Suppress float mode whenever the byte
+        // immediately *before* the leading digit is itself `.` —
+        // that means we're in `<expr>.<digits>` land (tuple index),
+        // not a number-literal position.
+        let prev_byte_is_dot = start > 0 && self.bytes[start - 1] == b'.';
+        let saw_dot = !prev_byte_is_dot
+            && self.peek_byte() == Some(b'.')
+            && self.peek_byte_at(1).map(|c| c.is_ascii_digit()).unwrap_or(false);
+        let saw_exp = !prev_byte_is_dot
+            && matches!(self.peek_byte(), Some(b'e') | Some(b'E'));
+        if saw_dot || saw_exp {
+            if saw_dot {
+                self.pos += 1; // .
+                while let Some(c) = self.peek_byte() {
+                    if c.is_ascii_digit() { self.pos += 1; } else { break; }
+                }
+            }
+            if matches!(self.peek_byte(), Some(b'e') | Some(b'E')) {
+                self.pos += 1;
+                if matches!(self.peek_byte(), Some(b'+') | Some(b'-')) { self.pos += 1; }
+                let exp_digits = self.pos;
+                while let Some(c) = self.peek_byte() {
+                    if c.is_ascii_digit() { self.pos += 1; } else { break; }
+                }
+                if self.pos == exp_digits {
+                    return Err(Error::new(
+                        ErrorKind::Lex,
+                        "expected digits in float exponent",
+                        Span { start, end: self.pos },
+                    ));
+                }
+            }
+            let text = &self.src[start..self.pos];
+            let f: f64 = text.parse().map_err(|_| Error::new(
+                ErrorKind::Lex,
+                format!("invalid float literal '{text}'"),
+                Span { start, end: self.pos },
+            ))?;
+            return Ok(Token::Float(crate::value::F64Bits(f)));
+        }
+
         // Optional suffix: i32 / u32 / u64 / u128 / i64 / u
         let suffix_start = self.pos;
         while let Some(c) = self.peek_byte() {

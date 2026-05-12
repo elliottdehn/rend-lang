@@ -1082,6 +1082,7 @@ impl<'a> Interp<'a> {
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::int(n.clone())),
             ExprKind::UInt(n) => Ok(Value::uint(n.clone())),
+            ExprKind::Float(n) => Ok(Value::Float(*n)),
             ExprKind::I32(n) => Ok(Value::I32(*n)),
             ExprKind::U32(n) => Ok(Value::U32(*n)),
             ExprKind::U64(n) => Ok(Value::U64(*n)),
