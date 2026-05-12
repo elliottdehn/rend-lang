@@ -878,11 +878,11 @@ fn check_inner(
         // else at state-decl time so users see the limit before
         // they wire up reads/writes.
         if let Type::PBTree { key, .. } = &s.ty {
-            if key.as_ref() != &Type::U64 {
+            if !matches!(key.as_ref(), Type::U64 | Type::U128) {
                 return Err(Error::new(
                     ErrorKind::Type,
                     format!(
-                        "state '{}': pbtree currently supports only u64 keys (got pbtree<{key}, _>)",
+                        "state '{}': pbtree supports u64 or u128 keys (got pbtree<{key}, _>)",
                         s.name,
                     ),
                     s.span,
@@ -2251,24 +2251,26 @@ impl TypeChecker {
                         }
                         return Ok((**vt).clone());
                     }
-                    // pbtree state: also K → V indexing, but slice-1
-                    // requires K = u64. The pbtree::set runtime
-                    // re-validates if anything sneaks past.
+                    // pbtree state: K → V indexing. Slice-1 supported
+                    // key types are `u64` (point queries / monotonic
+                    // sequences) and `u128` (composite-index packed
+                    // keys). The pbtree::set runtime re-validates if
+                    // anything sneaks past.
                     if let Some(Type::PBTree { key: kt, value: vt }) = self.states.get(name) {
-                        if kt.as_ref() != &Type::U64 {
+                        if !matches!(kt.as_ref(), Type::U64 | Type::U128) {
                             return Err(Error::new(
                                 ErrorKind::Type,
                                 format!(
-                                    "pbtree currently supports only u64 keys; '{name}' uses pbtree<{kt}, _>",
+                                    "pbtree supports u64 or u128 keys; '{name}' uses pbtree<{kt}, _>",
                                 ),
                                 target.span,
                             ));
                         }
                         let actual_key = self.check_expr(key, env)?;
-                        if actual_key != Type::U64 {
+                        if &actual_key != kt.as_ref() {
                             return Err(Error::new(
                                 ErrorKind::Type,
-                                format!("pbtree key: expected u64, got {actual_key}"),
+                                format!("pbtree key: expected {kt}, got {actual_key}"),
                                 key.span,
                             ));
                         }

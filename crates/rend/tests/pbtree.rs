@@ -443,7 +443,7 @@ fn pbtree_works_on_bytecode_vm() {
 // ---------- typeck rejection ----------
 
 #[test]
-fn typeck_rejects_pbtree_with_non_u64_key() {
+fn typeck_rejects_pbtree_with_unsupported_key() {
     let err = rend::frontend("
         state bad: pbtree<string, u64>;
         fn main() -> u64 {
@@ -452,7 +452,58 @@ fn typeck_rejects_pbtree_with_non_u64_key() {
         }
     ").unwrap_err();
     assert!(
-        err.to_string().contains("u64"),
+        err.to_string().contains("u64") || err.to_string().contains("u128"),
         "got: {err}",
     );
+}
+
+// ---------- u128 keys (composite-index foundation) ----------
+
+#[test]
+fn pbtree_with_u128_keys_sorts_in_natural_order() {
+    // Pack (price: u64 ASC, time: u64 ASC) into a u128 key:
+    //   high 64 = price, low 64 = time.
+    // Lowest packed key wins, which is exactly what we want for
+    // an ask book (price ASC, time ASC).
+    let v = run(r#"
+        state ask_book: pbtree<u128, u64>;
+        const SHIFT: u128 = 18446744073709551616u128;
+        fn main() -> u64 {
+            ask_book[u128(102u64) * SHIFT + u128(1u64)] = 1u64;   // 102 @ t=1
+            ask_book[u128(100u64) * SHIFT + u128(2u64)] = 2u64;   // 100 @ t=2
+            ask_book[u128(101u64) * SHIFT + u128(3u64)] = 3u64;   // 101 @ t=3
+            ask_book[u128(100u64) * SHIFT + u128(0u64)] = 4u64;   // 100 @ t=0
+            // First in priority order is best ask: lowest price,
+            // then earliest time → entry 4 (100 @ t=0).
+            for id in ask_book {
+                return id;
+            }
+            return 0u64;
+        }
+    "#).unwrap();
+    assert_eq!(v, Value::U64(4));
+}
+
+#[test]
+fn pbtree_with_u128_keys_supports_bit_inversion_for_desc() {
+    // Bid book wants price DESC + time ASC. Encode by *bit-inverting*
+    // the price (highest price → smallest packed key), then OR'ing
+    // the time into the low 64.
+    let v = run(r#"
+        state bid_book: pbtree<u128, u64>;
+        const SHIFT:    u128 = 18446744073709551616u128;
+        const U64_MAX:  u64  = 18446744073709551615u64;
+        fn main() -> u64 {
+            bid_book[u128(U64_MAX - 98u64)  * SHIFT + u128(1u64)] = 1u64;
+            bid_book[u128(U64_MAX - 100u64) * SHIFT + u128(2u64)] = 2u64;
+            bid_book[u128(U64_MAX - 100u64) * SHIFT + u128(1u64)] = 3u64;   // best
+            bid_book[u128(U64_MAX - 99u64)  * SHIFT + u128(1u64)] = 4u64;
+            // First in priority order: id 3 (100 @ t=1).
+            for id in bid_book {
+                return id;
+            }
+            return 0u64;
+        }
+    "#).unwrap();
+    assert_eq!(v, Value::U64(3));
 }
