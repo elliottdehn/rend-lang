@@ -538,6 +538,11 @@ fn annotate_stmt(
         Stmt::ParallelForTo { id_var, source, output, body, .. } => {
             annotate_expr(source, scopes, state_types, ifaces);
             annotate_expr(output, scopes, state_types, ifaces);
+            // Source may be any `[T]`; `id_var` binds to T. The
+            // annotation pass only needs an approximation to thread
+            // interface-resolution dyncalls, so we don't bother
+            // walking the source expression for its element type
+            // here — U64 is a fine placeholder.
             scopes.push(HashMap::new());
             scopes.last_mut().unwrap().insert(id_var.clone(), Type::U64);
             annotate_block(body, scopes, state_types, ifaces);
@@ -1674,22 +1679,29 @@ impl TypeChecker {
                 Ok(false)
             }
             Stmt::ParallelForTo { id_var, source, output, body, span } => {
-                // Source must be [u64] — slice 1 fixes the id type at
-                // u64 (matches the `reserve N from state` story, where
-                // a state counter yields u64 ids). Future slices may
-                // relax this to any [T] once typeck and the parallel
-                // dispatcher learn to thread arbitrary element types.
+                // Source can be any `[T]`. The per-leg `id_var` binds
+                // to T (the element type of the source array). The
+                // reserve-from-counter pattern is the common case and
+                // still produces `[u64]`, but parallel-for-to also
+                // composes naturally with payload arrays like
+                // `[string]` that the JIT-codegen layer embeds as an
+                // explicit literal.
                 let src_ty = self.check_expr(source, env)?;
-                match &src_ty {
-                    Type::Array(elem) if matches!(**elem, Type::U64) => {}
-                    _ => return Err(Error::new(
+                // Unwrap any `` `[T]` `` tag — at the parallel-for-to
+                // boundary we only care about the element type. The
+                // safety property (inert at construction) has already
+                // been enforced; downstream iteration treats the
+                // array's contents as ordinary values.
+                let elem_id_ty = match src_ty.unwrap_explicit() {
+                    Type::Array(elem) => (**elem).clone(),
+                    other => return Err(Error::new(
                         ErrorKind::Type,
                         format!(
-                            "`parallel for ... in` source must be `[u64]`, got {src_ty}",
+                            "`parallel for ... in` source must be an array, got {other}",
                         ),
                         *span,
                     )),
-                }
+                };
                 // Output must be [T] for some T; body tail must
                 // produce a value compatible with T.
                 let out_ty = self.check_expr(output, env)?;
@@ -1704,9 +1716,10 @@ impl TypeChecker {
                     )),
                 };
                 // Body type-checks against the outer scope plus the
-                // per-iteration id binding.
+                // per-iteration id binding (typed as the source's
+                // element type).
                 env.push(HashMap::new());
-                env.last_mut().unwrap().insert(id_var.clone(), Type::U64);
+                env.last_mut().unwrap().insert(id_var.clone(), elem_id_ty);
                 let body_tail = self.check_block_as_expr(body, env)?;
                 env.pop();
                 if !types_compatible(&body_tail, &elem_ty) {

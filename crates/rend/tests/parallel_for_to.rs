@@ -170,29 +170,61 @@ fn parallel_for_to_body_must_yield_output_element_type() {
 }
 
 #[test]
-fn parallel_for_to_source_must_be_u64_array() {
-    // Slice 1 fixes the iteration type at u64 (the reserve-from-
-    // counter story); other element types come in later slices.
+fn parallel_for_to_source_accepts_any_array_element_type() {
+    // The reserve-from-counter pattern produces `[u64]` and is the
+    // common case, but parallel-for-to also composes with arrays
+    // of any element type — the per-leg `id` binds to whatever
+    // T the source array carries. Confirms an `[i64]` source
+    // type-checks cleanly with the body using `id: i64`.
     let kv = rend::kv::InMemoryKv::new();
     let src = r"
         module pfto;
-        fn main() -> u64 {
-            let source = [1i64, 2i64];
-            let output = [0i64, 0i64];
+        fn main() -> i64 {
+            let source = [1i64, 2i64, 3i64];
+            let output = [0i64, 0i64, 0i64];
             parallel for id in source to output {
-                id
+                id * 10i64
             }
-            return 0u64;
+            return output[0i64] + output[1i64] + output[2i64];
         }
     ";
-    let err = Engine::new()
-        .execute(src, Fuel::new(10_000), &kv)
-        .unwrap_err();
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("must be `[u64]`") || msg.contains("must be [u64]"),
-        "expected source-type error, got: {msg}",
-    );
+    // 10 + 20 + 30 = 60
+    let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
+    assert_eq!(out.result, Value::int(60i64));
+}
+
+#[test]
+fn parallel_for_to_iterates_over_string_payload() {
+    // The headline use case for non-u64 source: the JIT-codegen
+    // layer embeds a payload array of strings as an explicit
+    // literal, and the body interns each one. Each leg runs in
+    // its own shadow Tx; HAMT-disjoint per-key pmap writes commit
+    // without conflict.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module pfto;
+        state forward: pmap<string, u64>;
+        state next_id: u64;
+        entry fn intern(s: string) -> u64 {
+            let existing = forward[s];
+            if existing > 0u64 { return existing; }
+            let id = next_id + 1u64;
+            next_id = id;
+            forward[s] = id;
+            return id;
+        }
+        fn main() -> u64 {
+            let inputs = `["alpha", "beta", "gamma"]`;
+            let ids = arr<u64>[3u64];
+            parallel for s in inputs to ids {
+                intern(s)
+            }
+            return ids[0i64] + ids[1i64] + ids[2i64];
+        }
+    "#;
+    // ids = [1, 2, 3]; sum = 6
+    let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(6));
 }
 
 #[test]

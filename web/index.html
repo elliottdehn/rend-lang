@@ -182,33 +182,36 @@
 <span class="k">state</span> next_id: <span class="t">u64</span>;                 <span class="c">// sole intentionally-contended cell</span>
 
 <span class="c">// One read on a dedup hit; two writes + counter bump on a miss.</span>
-<span class="k">fn</span> intern_at(s: <span class="t">string</span>, slot: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+<span class="k">entry fn</span> intern(s: <span class="t">string</span>) -&gt; <span class="t">u64</span> {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing &gt; <span class="n">0u64</span> { <span class="k">return</span> existing; }
-    forward[s] = slot;
-    reverse[slot] = s;
-    <span class="k">return</span> slot;
+    <span class="k">let</span> id = next_id + <span class="n">1u64</span>;
+    next_id = id;
+    forward[s] = id;
+    reverse[id] = s;
+    <span class="k">return</span> id;
 }
 
-<span class="c">// The transaction. `reserve` is one atomic counter bump; the four</span>
-<span class="c">// parallel legs run in their own shadow Txs and hit disjoint cells.</span>
-<span class="c">// If two legs interned the same string, the merge re-runs the loser</span>
-<span class="c">// against the winner's write — it observes the existing id and</span>
-<span class="c">// returns it. No retry loops, no per-call subtransaction tax.</span>
+<span class="c">// The transaction. The JIT-codegen layer synthesizes the body</span>
+<span class="c">// from an incoming payload: the inputs array is embedded as an</span>
+<span class="c">// *explicit literal* so the parser refuses any code-shaped</span>
+<span class="c">// fragment. `parallel for` fans the interns into shadow Txs that</span>
+<span class="c">// hit disjoint pmap cells (HAMT-disjoint per content key); if two</span>
+<span class="c">// legs raced on the same string the merge re-runs the loser</span>
+<span class="c">// against the winner's write and observes the existing id.</span>
+<span class="c">// No retry loops, no per-call subtransaction tax.</span>
 <span class="c">//</span>
 <span class="c">// `main` returns whatever shape the request needs — here, the array</span>
 <span class="c">// of canonical ids the caller can use to look the strings back up.</span>
 <span class="k">fn</span> main() -&gt; [<span class="t">u64</span>] {
-    <span class="k">let</span> slots = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
+    <span class="k">let</span> inputs = <span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>;
+    <span class="k">let</span> ids = <span class="k">arr</span>&lt;<span class="t">u64</span>&gt;[<span class="n">4u64</span>];
 
-    <span class="k">parallel</span> {
-        <span class="k">let</span> id_a = intern_at(<span class="k">`</span><span class="s">"alpha"</span><span class="k">`</span>, slots[<span class="n">0i64</span>]);
-        <span class="k">let</span> id_b = intern_at(<span class="k">`</span><span class="s">"beta"</span><span class="k">`</span>,  slots[<span class="n">1i64</span>]);
-        <span class="k">let</span> id_c = intern_at(<span class="k">`</span><span class="s">"gamma"</span><span class="k">`</span>, slots[<span class="n">2i64</span>]);
-        <span class="k">let</span> id_d = intern_at(<span class="k">`</span><span class="s">"delta"</span><span class="k">`</span>, slots[<span class="n">3i64</span>]);
+    <span class="k">parallel for</span> s <span class="k">in</span> inputs <span class="k">to</span> ids {
+        intern(s)
     }
 
-    <span class="k">return</span> [id_a, id_b, id_c, id_d];
+    <span class="k">return</span> ids;
 }
 </code></pre>
   <p class="subtle" style="margin-top: 20px;">The same algorithm in SQL is a CTE wrapping <code>INSERT&nbsp;...&nbsp;ON&nbsp;CONFLICT&nbsp;DO&nbsp;NOTHING&nbsp;RETURNING&nbsp;id</code> with a <code>UNION&nbsp;ALL&nbsp;SELECT</code> fallback — one statement doing two unrelated jobs because the language can't say either of them directly — plus a stored procedure to make it composable, plus exception handling that allocates a subtransaction per call, plus a retry loop in the application. Stored procedures of this shape are how every non-trivial Supabase project ends up with a <code>database/functions/*.sql</code> directory nobody loves.</p>
