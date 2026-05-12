@@ -56,6 +56,27 @@ fn example_44_event_handlers_fires_each_handler_on_every_emit() {
 }
 
 #[test]
+fn example_47_order_book_with_composite_pbtree_bytes_keys() {
+    // Bytes-keyed pbtree gives unbounded composite-index arity.
+    // The order-book example hand-packs (price, time) into the
+    // pbtree key (DESC = `bit_not_bytes` on the price bytes);
+    // matching sweeps the book in priority order with explicit
+    // back-link deletion.
+    //
+    //   2 fills (10@100, 5@102) × 1_000_000 = 2_000_000
+    //   best_bid_price (105) × 1000          =     105_000
+    //   best_ask_price (0, fully consumed)   =           0
+    //   total                                = 2_105_000
+    use rend::{Engine, Fuel};
+    let src = std::fs::read_to_string("examples/47_order_book.rd").unwrap();
+    let kv = rend::kv::InMemoryKv::new();
+    let out = Engine::new()
+        .execute(&src, Fuel::new(200_000), &kv)
+        .unwrap();
+    assert_eq!(out.result, Value::U64(2_105_000));
+}
+
+#[test]
 fn example_46_parallel_bulk_credit_runs_disjoint_rmw_concurrently() {
     // Two batch credits, each doing three R→W ops on disjoint
     // balance cells inside a `parallel` block. The reads issue

@@ -87,11 +87,13 @@ fn write_node(tx: &mut Tx, bytes: Vec<u8>) -> u128 {
 pub fn compare_keys(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
         (Value::U64(x), Value::U64(y)) => x.cmp(y),
-        // u128 supports the composite-index encoding: two u64 fields
-        // packed into one key (DESC components bit-inverted), so
-        // a `pbtree<u128, V>` stores order-book entries already in
-        // priority order.
         (Value::U128(x), Value::U128(y)) => x.cmp(y),
+        // `bytes` keys compare lexicographically — that's what makes
+        // composite indexes work for unbounded arity. The compiler
+        // packs each field big-endian (bit-inverted for DESC) and
+        // concatenates; lex order on the packed bytes equals the
+        // requested multi-field priority.
+        (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
         // Other key types extend here as the encoding work expands.
         _ => std::cmp::Ordering::Equal,
     }

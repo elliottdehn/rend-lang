@@ -878,11 +878,11 @@ fn check_inner(
         // else at state-decl time so users see the limit before
         // they wire up reads/writes.
         if let Type::PBTree { key, .. } = &s.ty {
-            if !matches!(key.as_ref(), Type::U64 | Type::U128) {
+            if !matches!(key.as_ref(), Type::U64 | Type::U128 | Type::Bytes) {
                 return Err(Error::new(
                     ErrorKind::Type,
                     format!(
-                        "state '{}': pbtree supports u64 or u128 keys (got pbtree<{key}, _>)",
+                        "state '{}': pbtree supports u64, u128, or bytes keys (got pbtree<{key}, _>)",
                         s.name,
                     ),
                     s.span,
@@ -1772,6 +1772,30 @@ impl TypeChecker {
                 }
                 Ok(Some(Type::Bytes))
             }
+            "to_be_bytes" => {
+                if args.len() != 1 { return arity_err(1); }
+                let t = self.check_expr(&args[0], env)?;
+                if !matches!(t, Type::U32 | Type::U64 | Type::U128 | Type::I32) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!("to_be_bytes() expects a fixed-width int (u32/u64/u128/i32), got {t}"),
+                        args[0].span,
+                    ));
+                }
+                Ok(Some(Type::Bytes))
+            }
+            "bit_not_bytes" => {
+                if args.len() != 1 { return arity_err(1); }
+                let t = self.check_expr(&args[0], env)?;
+                if t != Type::Bytes {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!("bit_not_bytes() expects bytes, got {t}"),
+                        args[0].span,
+                    ));
+                }
+                Ok(Some(Type::Bytes))
+            }
             "bytes_eq" => {
                 if args.len() != 2 { return arity_err(2); }
                 let a = self.check_expr(&args[0], env)?;
@@ -2257,11 +2281,11 @@ impl TypeChecker {
                     // keys). The pbtree::set runtime re-validates if
                     // anything sneaks past.
                     if let Some(Type::PBTree { key: kt, value: vt }) = self.states.get(name) {
-                        if !matches!(kt.as_ref(), Type::U64 | Type::U128) {
+                        if !matches!(kt.as_ref(), Type::U64 | Type::U128 | Type::Bytes) {
                             return Err(Error::new(
                                 ErrorKind::Type,
                                 format!(
-                                    "pbtree supports u64 or u128 keys; '{name}' uses pbtree<{kt}, _>",
+                                    "pbtree supports u64, u128, or bytes keys; '{name}' uses pbtree<{kt}, _>",
                                 ),
                                 target.span,
                             ));

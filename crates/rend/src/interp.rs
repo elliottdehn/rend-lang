@@ -321,6 +321,7 @@ impl<'a> Interp<'a> {
                 Ok(Some(Value::U64(self.tx.borrow().context().block_number)))
             }
             "to_bytes" | "bytes_len" | "bytes_concat" | "bytes_eq" | "bytes_slice"
+            | "to_be_bytes" | "bit_not_bytes"
             | "string_concat" | "string_slice" | "string_contains" => {
                 Ok(Some(crate::ops::call_builtin(name, args)?))
             }

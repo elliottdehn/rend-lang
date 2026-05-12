@@ -353,6 +353,37 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             [Value::Bytes(a), Value::Bytes(b)] => Ok(Value::Bool(a == b)),
             _ => Err(bad("bytes_eq(bytes, bytes)".into())),
         },
+        // Big-endian byte encoding of a fixed-width integer. The
+        // primary use is composite-index keys: lex order on the
+        // packed bytes equals natural ordering on the integer, so
+        // `bytes_concat(to_be_bytes(a), to_be_bytes(b))` sorts by
+        // (a, b). Width comes from the value's static type — same
+        // width as the integer's wire encoding.
+        "to_be_bytes" => match args {
+            [Value::U32(n)]  => Ok(Value::Bytes(n.to_be_bytes().to_vec())),
+            [Value::U64(n)]  => Ok(Value::Bytes(n.to_be_bytes().to_vec())),
+            [Value::U128(n)] => Ok(Value::Bytes(n.to_be_bytes().to_vec())),
+            [Value::I32(n)]  => {
+                // Two's complement is order-preserving once you flip
+                // the sign bit, which is what `i32 → u32 + 0x8000_0000
+                // → u32::to_be_bytes` accomplishes.
+                let u = (*n as u32) ^ 0x8000_0000;
+                Ok(Value::Bytes(u.to_be_bytes().to_vec()))
+            }
+            _ => Err(bad(
+                "to_be_bytes(u32 | u64 | u128 | i32)".into(),
+            )),
+        },
+        // Byte-wise bitwise NOT. Used to encode DESC components of a
+        // composite-index key: inverting the bytes of the encoded
+        // field flips its sort direction without leaving the lex
+        // ordering space.
+        "bit_not_bytes" => match args {
+            [Value::Bytes(b)] => Ok(Value::Bytes(
+                b.iter().map(|x| !x).collect(),
+            )),
+            _ => Err(bad("bit_not_bytes(bytes)".into())),
+        },
         "bytes_slice" => match args {
             [Value::Bytes(b), Value::Int(start), Value::Int(end)] => {
                 let s = start.to_usize().ok_or_else(|| {

@@ -74,6 +74,8 @@ fn build_sigs(module: &Module) -> HashMap<String, FnSig> {
     sigs.insert("bytes_concat".to_string(), FnSig { ret: Type::Bytes });
     sigs.insert("bytes_eq".to_string(),     FnSig { ret: Type::Bool });
     sigs.insert("bytes_slice".to_string(),  FnSig { ret: Type::Bytes });
+    sigs.insert("to_be_bytes".to_string(),   FnSig { ret: Type::Bytes });
+    sigs.insert("bit_not_bytes".to_string(), FnSig { ret: Type::Bytes });
     sigs.insert("string_concat".to_string(),   FnSig { ret: Type::String });
     sigs.insert("pmap_contains".to_string(),    FnSig { ret: Type::Bool });
     sigs.insert("pvec_push".to_string(),        FnSig { ret: Type::U64 });

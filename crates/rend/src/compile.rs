@@ -2338,6 +2338,7 @@ impl<'a> FnCompiler<'a> {
                     | "dict_set" | "dict_remove" | "dict_get" | "dict_has" | "dict_len"
                     | "assert"
                     | "to_bytes" | "bytes_len" | "bytes_concat" | "bytes_eq" | "bytes_slice"
+                    | "to_be_bytes" | "bit_not_bytes"
                     | "string_concat" | "string_slice" | "string_contains"
                     | "sum" | "max" | "min"
                     | "parse_json" | "json_stringify"

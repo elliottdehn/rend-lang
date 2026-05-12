@@ -465,6 +465,7 @@ fn is_pure_builtin(name: &str) -> bool {
         | "i64" | "i32" | "u32" | "u64" | "u128"
         | "msg_sender" | "block_timestamp" | "block_number"
         | "to_bytes" | "bytes_len" | "bytes_concat" | "bytes_eq" | "bytes_slice"
+        | "to_be_bytes" | "bit_not_bytes"
         | "string_concat" | "string_slice" | "string_contains"
         | "pmap_contains"
         | "pvec_len"
