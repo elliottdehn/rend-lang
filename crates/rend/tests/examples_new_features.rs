@@ -76,6 +76,9 @@ fn example_49_frequent_batch_auction_uncrosses_at_volume_max_price() {
     // FBA: no time priority — orders sit in a pending tick, then
     // `commit_tick` finds the clearing price P* that maximizes
     // crossed volume and fills every eligible order pro-rata at P*.
+    // Submits run in a `parallel { }` block — each shadow Tx does
+    // a real disjoint R→W on its user's cash/asset cell and a write
+    // to a fresh pmap key (id pre-allocated serially upstream).
     //
     // Seeded book:
     //   buys:  alice 10 @ 100, bob  5 @ 99
@@ -84,15 +87,16 @@ fn example_49_frequent_batch_auction_uncrosses_at_volume_max_price() {
     // the higher tie). Eligible: alice (10) vs carol (8). Pro-rata:
     // alice fills 8, carol fills 8.
     //
-    //   volume*1_000_000 + clearing_price*100 + fill_count
-    //   = 8*1_000_000 + 100*100 + 2 = 8_010_002.
+    // Settlement: asset[alice] = 8, cash[carol] = 800.
+    //   volume*1_000_000 + cash[carol]*100 + asset[alice]
+    //   = 8*1_000_000 + 800*100 + 8 = 8_080_008.
     use rend::{Engine, Fuel};
     let src = std::fs::read_to_string("examples/49_batch_auction.rd").unwrap();
     let kv = rend::kv::InMemoryKv::new();
     let out = Engine::new()
         .execute(&src, Fuel::new(200_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::U64(8_010_002));
+    assert_eq!(out.result, Value::U64(8_080_008));
 }
 
 #[test]
