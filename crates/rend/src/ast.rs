@@ -49,19 +49,31 @@ pub struct Module {
 /// will need a `pmap_remove`-aware update path (future slice).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexDecl {
-    /// Name of the index pmap state slot.
+    /// Name of the index state slot.
     pub name: String,
     /// Name of the primary pmap state slot the index covers.
     pub on_state: String,
-    /// Field path projected from the primary's value type.
-    /// Single field for the simple case (`email`); nested paths
-    /// supported (`email.local_part`).
-    pub projection: Vec<String>,
-    /// Whether the index is unique (one primary key per field
-    /// value) or multi (list of primary keys per field value).
+    /// Projected fields. Single-entry for the legacy single-field
+    /// shape (`STATE.email`); multi-entry for composite indexes
+    /// (`STATE.(price ASC, time DESC, ...)`). For composite, the
+    /// compiler packs the fields into a `bytes` key via
+    /// `to_be_bytes` + `bit_not_bytes` (DESC) + `bytes_concat`,
+    /// and the index slot must be `pbtree<bytes, _>`.
+    pub fields: Vec<IndexField>,
     pub kind: IndexKind,
     pub span: Span,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexField {
+    /// Nested field path projected from the primary's value type.
+    /// `["profile", "email"]` corresponds to `STATE.profile.email`.
+    pub path: Vec<String>,
+    pub direction: SortDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection { Asc, Desc }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexKind {

@@ -805,32 +805,7 @@ impl<'a> Interp<'a> {
     ) -> Result<(), Error> {
         for idx in &self.module.indexes {
             if idx.on_state != primary_state { continue; }
-            // Project the indexed field out of the prior value.
-            let mut cur = prior_value.clone();
-            for field in &idx.projection {
-                cur = match cur {
-                    Value::Struct { fields, .. } => fields
-                        .iter()
-                        .find(|(n, _)| n == field)
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| Error::new(
-                            ErrorKind::Runtime,
-                            format!(
-                                "index '{}': field '{field}' missing on stored struct",
-                                idx.name,
-                            ),
-                            idx.span,
-                        ))?,
-                    other => return Err(Error::new(
-                        ErrorKind::Runtime,
-                        format!(
-                            "index '{}': cannot project '{field}' from {other}",
-                            idx.name,
-                        ),
-                        idx.span,
-                    )),
-                };
-            }
+            let cur = project_index_key(idx, prior_value)?;
             let (idx_kt, idx_vt, is_pbtree) = match self.state_types.get(&idx.name) {
                 Some(Type::PMap { key, value }) => ((**key).clone(), (**value).clone(), false),
                 Some(Type::PBTree { key, value }) => ((**key).clone(), (**value).clone(), true),
@@ -918,32 +893,7 @@ impl<'a> Interp<'a> {
     ) -> Result<(), Error> {
         for idx in &self.module.indexes {
             if idx.on_state != primary_state { continue; }
-            // Walk projection through the value.
-            let mut cur = value.clone();
-            for field in &idx.projection {
-                cur = match cur {
-                    Value::Struct { fields, .. } => fields
-                        .iter()
-                        .find(|(n, _)| n == field)
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| Error::new(
-                            ErrorKind::Runtime,
-                            format!(
-                                "index '{}': field '{field}' missing on stored struct",
-                                idx.name,
-                            ),
-                            idx.span,
-                        ))?,
-                    other => return Err(Error::new(
-                        ErrorKind::Runtime,
-                        format!(
-                            "index '{}': cannot project '{field}' from {other}",
-                            idx.name,
-                        ),
-                        idx.span,
-                    )),
-                };
-            }
+            let cur = project_index_key(idx, value)?;
             // Determine the index slot's backend (pmap or pbtree)
             // and dispatch to the right module. K/V types are the
             // same shape; only the trie module changes.
@@ -2047,6 +1997,73 @@ impl<'a> Interp<'a> {
     pub fn without_storage(module: &'a Module, host: &'a Host, kv: &'a EmptyKv) -> Self {
         Self::new(module, host, Tx::new(kv))
     }
+}
+
+/// Project an index's composite/single key out of a stored
+/// primary value. Single-field indexes return the projected value
+/// directly (legacy shape: index slot is `pmap<K, ...>` or
+/// `pbtree<K, ...>` keyed by the field type). Composite indexes
+/// pack each projected field via big-endian byte encoding,
+/// bit-inverting DESC components, and concatenate — the result
+/// is a `Value::Bytes`. The index slot for composite must be
+/// `pbtree<bytes, ...>`.
+fn project_index_key(
+    idx: &crate::ast::IndexDecl,
+    primary_value: &Value,
+) -> Result<Value, Error> {
+    if idx.fields.len() == 1
+        && idx.fields[0].direction == crate::ast::SortDirection::Asc
+    {
+        return walk_field_path(&idx.fields[0].path, primary_value, idx);
+    }
+    let mut packed: Vec<u8> = Vec::new();
+    for f in &idx.fields {
+        let v = walk_field_path(&f.path, primary_value, idx)?;
+        let be = crate::ops::call_builtin("to_be_bytes", &[v])?;
+        let part = if f.direction == crate::ast::SortDirection::Desc {
+            crate::ops::call_builtin("bit_not_bytes", &[be])?
+        } else {
+            be
+        };
+        match part {
+            Value::Bytes(b) => packed.extend(b),
+            _ => unreachable!("to_be_bytes always returns bytes"),
+        }
+    }
+    Ok(Value::Bytes(packed))
+}
+
+fn walk_field_path(
+    path: &[String],
+    primary_value: &Value,
+    idx: &crate::ast::IndexDecl,
+) -> Result<Value, Error> {
+    let mut cur = primary_value.clone();
+    for field in path {
+        cur = match cur {
+            Value::Struct { fields, .. } => fields
+                .iter()
+                .find(|(n, _)| n == field)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| Error::new(
+                    ErrorKind::Runtime,
+                    format!(
+                        "index '{}': field '{field}' missing on stored struct",
+                        idx.name,
+                    ),
+                    idx.span,
+                ))?,
+            other => return Err(Error::new(
+                ErrorKind::Runtime,
+                format!(
+                    "index '{}': cannot project '{field}' from {other}",
+                    idx.name,
+                ),
+                idx.span,
+            )),
+        };
+    }
+    Ok(cur)
 }
 
 fn compose_map_key(root: u128, key: &Value, _span: Span) -> Result<u128, Error> {

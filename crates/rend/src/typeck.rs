@@ -958,47 +958,86 @@ fn check_inner(
                 )),
             },
         };
-        // Walk the projection path through the primary's value type.
-        let mut cur_ty = primary_val;
-        for (depth, field) in idx.projection.iter().enumerate() {
-            let struct_name = match &cur_ty {
-                Type::Struct { name, .. } => name.clone(),
-                other => return Err(Error::new(
+        // Resolve each projected field's static type.
+        let mut projected_types: Vec<Type> = Vec::with_capacity(idx.fields.len());
+        for f in &idx.fields {
+            let mut cur_ty = primary_val.clone();
+            for (depth, field) in f.path.iter().enumerate() {
+                let struct_name = match &cur_ty {
+                    Type::Struct { name, .. } => name.clone(),
+                    other => return Err(Error::new(
+                        ErrorKind::Type,
+                        format!(
+                            "index '{}': projection step {depth} ('{field}') needs a struct type, got {other}",
+                            idx.name,
+                        ),
+                        idx.span,
+                    )),
+                };
+                let s_fields = structs.get(&struct_name).ok_or_else(|| Error::new(
                     ErrorKind::Type,
                     format!(
-                        "index '{}': projection step {depth} ('{field}') needs a struct type, got {other}",
+                        "index '{}': struct '{struct_name}' has no fields registered",
                         idx.name,
                     ),
                     idx.span,
-                )),
-            };
-            let fields = structs.get(&struct_name).ok_or_else(|| Error::new(
-                ErrorKind::Type,
-                format!(
-                    "index '{}': struct '{struct_name}' has no fields registered",
-                    idx.name,
-                ),
-                idx.span,
-            ))?;
-            let next = fields.iter().find(|(n, _)| n == field).ok_or_else(|| Error::new(
-                ErrorKind::Type,
-                format!(
-                    "index '{}': struct '{struct_name}' has no field '{field}'",
-                    idx.name,
-                ),
-                idx.span,
-            ))?;
-            cur_ty = next.1.clone();
+                ))?;
+                let next = s_fields.iter().find(|(n, _)| n == field).ok_or_else(|| Error::new(
+                    ErrorKind::Type,
+                    format!(
+                        "index '{}': struct '{struct_name}' has no field '{field}'",
+                        idx.name,
+                    ),
+                    idx.span,
+                ))?;
+                cur_ty = next.1.clone();
+            }
+            projected_types.push(cur_ty);
         }
-        if cur_ty != index_key {
-            return Err(Error::new(
-                ErrorKind::Type,
-                format!(
-                    "index '{}': projected field type {cur_ty} does not match index key type {index_key}",
-                    idx.name,
-                ),
-                idx.span,
-            ));
+        if idx.fields.len() == 1
+            && idx.fields[0].direction == crate::ast::SortDirection::Asc
+        {
+            // Legacy single-field: the projected field's type IS
+            // the index key type. The user declares the index slot
+            // with that same key type (e.g. `pmap<u64, u64>`).
+            let proj_ty = &projected_types[0];
+            if proj_ty != &index_key {
+                return Err(Error::new(
+                    ErrorKind::Type,
+                    format!(
+                        "index '{}': projected field type {proj_ty} does not match index key type {index_key}",
+                        idx.name,
+                    ),
+                    idx.span,
+                ));
+            }
+        } else {
+            // Composite: index slot must be `pbtree<bytes, _>` (the
+            // packed key is variable-length bytes), and every
+            // projected field must be `to_be_bytes`-able (fixed
+            // width int).
+            if index_key != Type::Bytes {
+                return Err(Error::new(
+                    ErrorKind::Type,
+                    format!(
+                        "index '{}' is composite ({} fields) — its slot must be `pbtree<bytes, _>` (got key type {index_key})",
+                        idx.name, idx.fields.len(),
+                    ),
+                    idx.span,
+                ));
+            }
+            for (f, t) in idx.fields.iter().zip(&projected_types) {
+                if !matches!(t, Type::U32 | Type::U64 | Type::U128 | Type::I32) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!(
+                            "index '{}': composite field {:?} has type {t} — composite fields must be fixed-width ints (u32/u64/u128/i32)",
+                            idx.name, f.path,
+                        ),
+                        idx.span,
+                    ));
+                }
+            }
         }
         if expected_index_val != primary_key {
             let pretty = match idx.kind {

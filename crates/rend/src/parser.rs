@@ -203,17 +203,52 @@ impl Parser {
         self.expect(Token::On, "expected 'on' after index name")?;
         let on_state = self.expect_ident()?;
         self.expect(Token::Dot, "expected '.' before projected field")?;
-        let mut projection = vec![self.expect_ident()?];
-        while matches!(self.peek_token(), Token::Dot) {
+        // Two surface shapes after the dot:
+        //   STATE.field               — single-field (ASC by default)
+        //   STATE.field.subfield      — single-field, nested path
+        //   STATE.(f1 ASC, f2 DESC)   — composite, per-field direction
+        let fields = if self.peek_is(&Token::LParen) {
             self.advance();
-            projection.push(self.expect_ident()?);
-        }
+            let mut fs = Vec::new();
+            while !self.peek_is(&Token::RParen) {
+                let mut path = vec![self.expect_ident()?];
+                while self.peek_is(&Token::Dot) {
+                    self.advance();
+                    path.push(self.expect_ident()?);
+                }
+                let direction = match self.peek_token() {
+                    Token::Asc  => { self.advance(); SortDirection::Asc }
+                    Token::Desc => { self.advance(); SortDirection::Desc }
+                    _ => SortDirection::Asc,
+                };
+                fs.push(IndexField { path, direction });
+                if !self.peek_is(&Token::RParen) {
+                    self.expect(Token::Comma, "expected ',' between composite index fields")?;
+                }
+            }
+            self.expect(Token::RParen, "expected ')' to close composite index field list")?;
+            if fs.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Parse,
+                    "composite index field list cannot be empty",
+                    self.cur_span(),
+                ));
+            }
+            fs
+        } else {
+            let mut path = vec![self.expect_ident()?];
+            while matches!(self.peek_token(), Token::Dot) {
+                self.advance();
+                path.push(self.expect_ident()?);
+            }
+            vec![IndexField { path, direction: SortDirection::Asc }]
+        };
         let semi = self.cur_span();
         self.expect(Token::Semi, "expected ';' after index decl")?;
         Ok(IndexDecl {
             name,
             on_state,
-            projection,
+            fields,
             kind,
             span: Span { start, end: semi.end },
         })

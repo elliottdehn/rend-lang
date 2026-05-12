@@ -1,59 +1,46 @@
-// Price-time priority order book.
+// Price-time priority order book — under the composite-index
+// syntax sugar.
 //
-// Composite indexing without syntax sugar yet — we hand-pack the
-// composite key into `bytes` and store it in a `pbtree<bytes, u64>`.
-// Lex order on the packed bytes is the priority order:
+//   index ask_book on asks.(price ASC, placed_at ASC);
+//   index bid_book on bids.(price DESC, placed_at ASC);
 //
-//   bid_book key = bit_not(price_be) || time_be
-//                  └── DESC ──┘  └── ASC ──┘
-//   ask_book key = price_be     || time_be
-//                  └── ASC ──┘  └── ASC ──┘
+// The compiler maintains each index on every write to its primary:
+// for every projected field it emits a `to_be_bytes` call,
+// `bit_not_bytes` on DESC components, and folds the parts via
+// `bytes_concat`. The packed `bytes` go straight into a
+// `pbtree<bytes, u64>` slot in priority order; iterating that
+// slot walks orders best-first, and primary deletes auto-clean
+// the index back-links.
 //
-// `bit_not` on the price bytes flips its sort direction (highest
-// price → lowest packed key → first in the pbtree's natural ASC
-// walk). Time gets appended in big-endian so earlier-placed orders
-// at the same price win the tie.
-//
-// `bytes`-keyed pbtree handles arbitrary composite arity — the
-// pattern generalizes to (price, exchange_id, time, …) just by
-// concatenating more `to_be_bytes` calls. The upcoming
-// `index NAME on STATE.(f1 ASC, f2 DESC, ...)` sugar will emit
-// this same packing automatically.
+// What you write here is just the *intent* — sort by these
+// fields in these directions. The encoding is the compiler's
+// problem.
 
 module order_book;
 
 struct Order { id: u64, price: u64, qty: u64, placed_at: u64, owner: Address }
 struct Fill  { bid_id: u64, ask_id: u64, price: u64, qty: u64, ts: u64 }
 
-state asks:    pmap<u64, Order>;
-state bids:    pmap<u64, Order>;
-state ask_book: pbtree<bytes, u64>;     // sorted: price ASC, time ASC
-state bid_book: pbtree<bytes, u64>;     // sorted: price DESC, time ASC
+state asks:     pmap<u64, Order>;
+state bids:     pmap<u64, Order>;
+state ask_book: pbtree<bytes, u64>;
+state bid_book: pbtree<bytes, u64>;
 state next_id:  u64;
 state next_seq: u64;
 state fills:    pvec<Fill>;
 
-// ---------- composite key packers ----------
+// Composite indexes. Compiler-generated maintenance writes a
+// (packed_key, primary_id) entry on every `asks[id] = Order{...}`
+// (resp. bids); `delete asks[id]` cascades the back-link removal.
+// `unique_index` because `placed_at` is the per-order sequence —
+// it makes the (price, placed_at) pair unique, so the index slot
+// is `pbtree<bytes, u64>` rather than `pbtree<bytes, [u64]>`.
+unique_index ask_book on asks.(price ASC,  placed_at ASC);
+unique_index bid_book on bids.(price DESC, placed_at ASC);
 
-fn pack_ask_key(price: u64, time: u64) -> bytes {
-    return bytes_concat(to_be_bytes(price), to_be_bytes(time));
-}
-
-fn pack_bid_key(price: u64, time: u64) -> bytes {
-    // DESC price → bit-invert the price bytes so the highest
-    // price sorts smallest under the pbtree's natural ASC walk.
-    return bytes_concat(
-        bit_not_bytes(to_be_bytes(price)),
-        to_be_bytes(time),
-    );
-}
-
-// ---------- matching helpers ----------
-
-// Return the id of the current best-priority resting ask, or 0
-// if the book is empty. Iteration restarts fresh each call so
-// concurrent deletes (when this is called in a match loop) don't
-// invalidate a stale cursor.
+// Best-priority resting order. Iteration is restarted on each call
+// so back-link deletes inside the match loop don't poison a
+// streaming cursor (stable-cursor follow-up will lift that).
 fn best_ask_id() -> u64 {
     for id in ask_book { return id; }
     return 0u64;
@@ -63,8 +50,6 @@ fn best_bid_id() -> u64 {
     return 0u64;
 }
 
-// ---------- submit ----------
-
 entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
     let buyer_id  = next_id  + 1u64;
     let buyer_seq = next_seq + 1u64;
@@ -72,9 +57,6 @@ entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
     next_seq = buyer_seq;
 
     let remaining = qty;
-    // Match against resting asks while the next one is cheap
-    // enough. Each iteration re-fetches the best ask so deletes
-    // don't poison a streaming cursor (slice-1 limitation).
     while remaining > 0u64 {
         let best = best_ask_id();
         if best == 0u64 { break; }
@@ -89,8 +71,9 @@ entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
             ts:     buyer_seq,
         });
         if ask.qty <= remaining {
+            // `delete asks[ask.id]` cascades through the index
+            // maintenance pass — no manual `delete ask_book[...]`.
             delete asks[ask.id];
-            delete ask_book[pack_ask_key(ask.price, ask.placed_at)];
             remaining = remaining - take;
         } else {
             asks[ask.id].qty = ask.qty - take;
@@ -99,6 +82,8 @@ entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
     }
 
     if remaining > 0u64 {
+        // The index maintenance picks up the (price, time) packing
+        // automatically and inserts a back-link into `bid_book`.
         bids[buyer_id] = Order {
             id:        buyer_id,
             price:     price,
@@ -106,7 +91,6 @@ entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
             placed_at: buyer_seq,
             owner:     owner,
         };
-        bid_book[pack_bid_key(price, buyer_seq)] = buyer_id;
     }
     return buyer_id;
 }
@@ -133,7 +117,6 @@ entry fn submit_sell(owner: Address, price: u64, qty: u64) -> u64 {
         });
         if bid.qty <= remaining {
             delete bids[bid.id];
-            delete bid_book[pack_bid_key(bid.price, bid.placed_at)];
             remaining = remaining - take;
         } else {
             bids[bid.id].qty = bid.qty - take;
@@ -149,12 +132,9 @@ entry fn submit_sell(owner: Address, price: u64, qty: u64) -> u64 {
             placed_at: seller_seq,
             owner:     owner,
         };
-        ask_book[pack_ask_key(price, seller_seq)] = seller_id;
     }
     return seller_id;
 }
-
-// ---------- views ----------
 
 entry view fn best_bid_price() -> u64 {
     let id = best_bid_id();
@@ -168,30 +148,21 @@ entry view fn best_ask_price() -> u64 {
 }
 entry view fn fill_count() -> u64 { return pvec_len(fills); }
 
-// ---------- driver ----------
-
 fn main() -> u64 {
     let alice = address("alice");
     let bob   = address("bob");
     let carol = address("carol");
 
-    // Asks: 100 × 10 (alice, earliest), 102 × 5 (carol).
-    submit_sell(alice, 100u64, 10u64);
-    submit_sell(carol, 102u64, 5u64);
-
-    // Bid: 99 × 3 by bob — no cross, rests at 99.
-    submit_buy(bob, 99u64, 3u64);
-
-    // Aggressive bid: 105 × 20.  Matches 10 @ 100 (alice's full ask),
-    // then 5 @ 102 (carol's full ask). Remaining 5 rests at 105.
-    submit_buy(bob, 105u64, 20u64);
+    submit_sell(alice, 100u64, 10u64);    // ask: 100 × 10
+    submit_sell(carol, 102u64,  5u64);    // ask: 102 × 5
+    submit_buy(bob,  99u64,  3u64);       // rests at 99 (no cross)
+    submit_buy(bob, 105u64, 20u64);       // matches 10 @ 100 then 5 @ 102
 
     // Final state:
-    //   fills:  2  (10 @ 100, 5 @ 102)
-    //   asks:   empty → best_ask_price = 0
-    //   bids:   bob's 105 (best) + bob's 99
-    //   best_bid_price = 105
-    // Encoded: fills*1000000 + best_bid*1000 + best_ask = 2_105_000.
+    //   fills = 2 (10 @ 100, 5 @ 102)
+    //   best_bid = 105 (bob's leftover after matching)
+    //   best_ask = 0   (both asks fully consumed)
+    // Encoded: fills*1_000_000 + best_bid*1000 + best_ask = 2_105_000.
     return fill_count() * 1000000u64
          + best_bid_price() * 1000u64
          + best_ask_price();

@@ -371,6 +371,88 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Walk a struct field path inside the value held in
+    /// `value_reg`, emitting `FieldGet` for each step. Returns
+    /// the register that holds the final projected value; the
+    /// caller owns it and must `free()` it. Single-element paths
+    /// allocate one register; deeper paths chain but free their
+    /// intermediates so only the leaf register is live on return.
+    fn emit_field_path(&mut self, path: &[String], value_reg: u16) -> u16 {
+        let mut cur = value_reg;
+        let mut owned: Option<u16> = None;
+        for field in path {
+            let name_idx = self.const_idx(Const::Str(field.clone()));
+            let next_reg = self.alloc();
+            self.code.push(Instr::FieldGet { dst: next_reg, src: cur, name_idx });
+            if let Some(prev) = owned.take() {
+                self.free(prev);
+            }
+            cur = next_reg;
+            owned = Some(next_reg);
+        }
+        cur
+    }
+
+    /// Compute the index key for a primary record held in
+    /// `value_reg`. Legacy single-field ASC indexes return the
+    /// projected value directly. Composite indexes pack the
+    /// fields into a `bytes` value via `to_be_bytes` (+
+    /// `bit_not_bytes` for DESC) + `bytes_concat`. Caller owns
+    /// the returned register and must `free()` it.
+    fn emit_index_key(&mut self, idx: &crate::ast::IndexDecl, value_reg: u16) -> u16 {
+        use crate::ast::SortDirection;
+        if idx.fields.len() == 1
+            && idx.fields[0].direction == SortDirection::Asc
+        {
+            return self.emit_field_path(&idx.fields[0].path, value_reg);
+        }
+        let to_be_bytes_name = self.const_idx(Const::Str("to_be_bytes".to_string()));
+        let bit_not_name = self.const_idx(Const::Str("bit_not_bytes".to_string()));
+        let bytes_concat_name = self.const_idx(Const::Str("bytes_concat".to_string()));
+        let mut packed: Option<u16> = None;
+        for f in &idx.fields {
+            // 1. Walk the projection path.
+            let projected = self.emit_field_path(&f.path, value_reg);
+            // 2. to_be_bytes(projected). Reuse the arg register as
+            //    the dst — the VM clones args before writing dst,
+            //    so this is safe and avoids leaking a slot per call.
+            let part = self.alloc();
+            self.code.push(Instr::Move { dst: part, src: projected });
+            self.free(projected);
+            self.code.push(Instr::BuiltinCall {
+                dst: part, name_idx: to_be_bytes_name, args_start: part, n_args: 1,
+            });
+            // 3. bit_not_bytes if DESC.
+            if f.direction == SortDirection::Desc {
+                self.code.push(Instr::BuiltinCall {
+                    dst: part, name_idx: bit_not_name, args_start: part, n_args: 1,
+                });
+            }
+            // 4. Fold into the packed accumulator.
+            packed = Some(match packed {
+                None => part,
+                Some(prev) => {
+                    // bytes_concat needs two contiguous arg slots.
+                    let args = self.alloc();
+                    let _arg1 = self.alloc(); // = args + 1
+                    self.code.push(Instr::Move { dst: args, src: prev });
+                    self.code.push(Instr::Move { dst: args + 1, src: part });
+                    self.free(prev);
+                    self.free(part);
+                    self.code.push(Instr::BuiltinCall {
+                        dst: args, name_idx: bytes_concat_name,
+                        args_start: args, n_args: 2,
+                    });
+                    // Free the second arg slot; `args` survives as
+                    // the result.
+                    self.free(args + 1);
+                    args
+                }
+            });
+        }
+        packed.expect("composite has >= 1 field")
+    }
+
     fn const_idx(&mut self, c: Const) -> u16 {
         for (i, existing) in self.consts.iter().enumerate() {
             if existing == &c {
@@ -825,24 +907,12 @@ impl<'a> FnCompiler<'a> {
                 if is_pmap {
                     if let Some(idxs) = self.indexes_by_primary.get(state_name).cloned() {
                         for idx in idxs {
-                            // Walk the projection path; `cur` always
-                            // holds the current accessor's register.
-                            let mut cur = value_reg;
-                            // Track which register we own so we don't
-                            // accidentally free the caller's value_reg.
-                            let mut owned: Option<u16> = None;
-                            for field in &idx.projection {
-                                let name_idx = self.const_idx(Const::Str(field.clone()));
-                                let next_reg = self.alloc();
-                                self.code.push(Instr::FieldGet {
-                                    dst: next_reg, src: cur, name_idx,
-                                });
-                                if let Some(prev) = owned.take() {
-                                    self.free(prev);
-                                }
-                                cur = next_reg;
-                                owned = Some(next_reg);
-                            }
+                            // Single-field legacy: `cur` is the projected
+                            // value reg directly. Composite: `cur` is a
+                            // packed `bytes` reg produced by
+                            // `emit_index_key`. Either way, the caller
+                            // frees `cur` at the bottom.
+                            let cur = self.emit_index_key(&idx, value_reg);
                             let index_state_idx = *self.state_index.get(&idx.name).expect(
                                 "index slot validated by typeck",
                             );
@@ -883,9 +953,7 @@ impl<'a> FnCompiler<'a> {
                                     });
                                 }
                             }
-                            if let Some(reg) = owned {
-                                self.free(reg);
-                            }
+                            self.free(cur);
                         }
                     }
                 }
@@ -1416,21 +1484,10 @@ impl<'a> FnCompiler<'a> {
         // Walk indexes covering this state and emit cleanup ops.
         if let Some(idxs) = self.indexes_by_primary.get(state_name).cloned() {
             for idx in idxs {
-                // Project the indexed field out of the prior value.
-                let mut cur = prior_reg;
-                let mut owned: Option<u16> = None;
-                for field in &idx.projection {
-                    let name_idx = self.const_idx(Const::Str(field.clone()));
-                    let next_reg = self.alloc();
-                    self.code.push(Instr::FieldGet {
-                        dst: next_reg, src: cur, name_idx,
-                    });
-                    if let Some(prev) = owned.take() {
-                        self.free(prev);
-                    }
-                    cur = next_reg;
-                    owned = Some(next_reg);
-                }
+                // Resolve the index key from the prior value —
+                // legacy single-field returns the projected leaf;
+                // composite returns the packed `bytes`.
+                let cur = self.emit_index_key(&idx, prior_reg);
                 let index_state_idx = *self.state_index.get(&idx.name).expect(
                     "index slot validated by typeck",
                 );
@@ -1468,9 +1525,7 @@ impl<'a> FnCompiler<'a> {
                         });
                     }
                 }
-                if let Some(reg) = owned {
-                    self.free(reg);
-                }
+                self.free(cur);
             }
         }
 

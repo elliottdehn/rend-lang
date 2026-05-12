@@ -79,6 +79,13 @@ pub enum Token {
     Dict,
     Index,
     UniqueIndex,
+    /// `ASC` / `DESC` — per-field ordering inside a composite
+    /// index decl (`index NAME on STATE.(f1 ASC, f2 DESC);`).
+    /// DESC components are bit-inverted (`bit_not_bytes` on the
+    /// big-endian field bytes) when packing the composite key,
+    /// so pbtree's natural ASC sort yields the requested priority.
+    Asc,
+    Desc,
     On,
     Delete,
 

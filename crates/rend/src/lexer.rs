@@ -340,6 +340,8 @@ impl<'a> Lexer<'a> {
             "dict" => Token::Dict,
             "index" => Token::Index,
             "unique_index" => Token::UniqueIndex,
+            "ASC" => Token::Asc,
+            "DESC" => Token::Desc,
             "on" => Token::On,
             "delete" => Token::Delete,
             _ => Token::Ident(s.to_string()),
