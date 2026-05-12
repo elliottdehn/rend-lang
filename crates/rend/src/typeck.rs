@@ -3045,7 +3045,10 @@ impl TypeChecker {
                         ));
                     }
                     let t = self.check_expr(&args[0], env)?;
-                    return match t {
+                    // len() doesn't care about the explicit-literal
+                    // tag — it inspects the value's shape, not its
+                    // safety-property tag. Unwrap before matching.
+                    return match t.unwrap_explicit() {
                         Type::Array(_) | Type::String | Type::Set(_) | Type::Dict { .. } => Ok(Type::Int),
                         other => Err(Error::new(
                             ErrorKind::Type,

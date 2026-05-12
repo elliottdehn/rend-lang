@@ -177,7 +177,7 @@
   <p class="subtitle">A rend program has two layers: the <strong>module</strong> — the durable schema and the helper logic, deployed once — and <strong>main</strong> — the per-request transaction, synthesized fresh by the JIT-codegen layer from each incoming payload.</p>
 
   <h3 style="margin-top: 28px;">The module &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— durable, deployed once</span></h3>
-  <p>Schema declarations and reusable helpers. Lives in source; the runtime ledger tracks what's actually deployed.</p>
+  <p>Schema, structs, private helpers, and the stable <em>entry</em> functions that form the module's API. Lives in source; the runtime ledger tracks what's actually deployed.</p>
 <pre><code><span class="k">module</span> strdedup;
 
 <span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, <span class="t">u64</span>&gt;;   <span class="c">// content → id (HAMT-disjoint per key)</span>
@@ -186,18 +186,12 @@
 
 <span class="k">struct</span> InternResult { id: <span class="t">u64</span>, fresh: <span class="t">bool</span> }
 
-<span class="c">// One read on a dedup hit; two writes on a miss. The slot comes</span>
-<span class="c">// from a caller-side `reserve`, so this function never contends</span>
-<span class="c">// on `next_id`. `s` is declared `` `string` `` — sticky — so any</span>
-<span class="c">// call site must supply a backtick-tagged value (or one that</span>
-<span class="c">// flowed through a sticky binding). Computed strings are</span>
-<span class="c">// rejected at typeck. Safety is structural, not patrolled.</span>
-<span class="c">//</span>
-<span class="c">// Returns the canonical id plus a `fresh` flag — true when this</span>
-<span class="c">// call performed the insert, false on a dedup hit. Caller code</span>
-<span class="c">// can branch on `fresh` (e.g. to emit a "new entity" event only</span>
-<span class="c">// on real creations).</span>
-<span class="k">entry fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
+<span class="c">// Private helper. One read on a dedup hit; two writes on a miss.</span>
+<span class="c">// The slot is caller-supplied, so this function never contends</span>
+<span class="c">// on `next_id`. `s: `string`` is sticky — any caller must supply</span>
+<span class="c">// a backtick-tagged value or one that flowed through a sticky</span>
+<span class="c">// binding; computed strings are a typeck error.</span>
+<span class="k">fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing &gt; <span class="n">0u64</span> {
         <span class="k">return</span> InternResult { id: existing, fresh: <span class="k">false</span> };
@@ -206,20 +200,30 @@
     reverse[slot] = s;
     <span class="k">return</span> InternResult { id: slot, fresh: <span class="k">true</span> };
 }
-</code></pre>
 
-  <h3 style="margin-top: 36px;">The transaction &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— per-request, JIT-synthesized</span></h3>
-  <p>Each request gets its own <code>main</code> built from the incoming payload. The payload arrays are embedded as <em>explicit literals</em> so the parser refuses any code-shaped fragment; <code>reserve</code> does one atomic counter bump for the whole batch; the <code>parallel for</code> legs run in their own shadow transactions and hit disjoint pmap cells. If two legs raced on the same string, the merge re-runs the loser against the winner's write — no retry loops, no per-call subtransaction tax.</p>
-<pre><code><span class="k">fn</span> main() -&gt; [InternResult] {
-    <span class="k">let</span> inputs  = <span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>;
-    <span class="k">let</span> slots   = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
-    <span class="k">let</span> results = <span class="k">arr</span>&lt;InternResult&gt;[<span class="n">4u64</span>];
+<span class="c">// The stable API. The signature is what the JIT-codegen layer</span>
+<span class="c">// generates against, what clients call, and what every `main`</span>
+<span class="c">// the synthesizer emits is a thin wrapper over. `strings:</span>
+<span class="c">// `[string]`` means the payload must arrive as inert data —</span>
+<span class="c">// the safety property propagates outward from this signature</span>
+<span class="c">// through every call site, no matter how many hops.</span>
+<span class="k">entry fn</span> intern_batch(strings: <span class="k">`</span>[<span class="t">string</span>]<span class="k">`</span>) -&gt; [InternResult] {
+    <span class="k">let</span> n       = len(strings);
+    <span class="k">let</span> slots   = <span class="k">reserve</span> n <span class="k">from</span> next_id;
+    <span class="k">let</span> results = <span class="k">arr</span>&lt;InternResult&gt;[n];
 
-    <span class="k">parallel for</span> (i, s) <span class="k">in</span> inputs <span class="k">to</span> results {
+    <span class="k">parallel for</span> (i, s) <span class="k">in</span> strings <span class="k">to</span> results {
         intern_at(s, slots[i])
     }
 
     <span class="k">return</span> results;
+}
+</code></pre>
+
+  <h3 style="margin-top: 36px;">The transaction &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— per-request, JIT-synthesized</span></h3>
+  <p>Each request gets its own <code>main</code> emitted by the JIT-codegen layer from the incoming payload. The payload is embedded as an <em>explicit literal</em> so the parser refuses any code-shaped fragment; the body is a one-line call into the stable module entry. Everything substantive — atomic id reservation, the parallel-for fan-out, the shadow-Tx merge, the conflict re-run — lives behind the entry's signature, so it stays the same whether the call comes from a client SDK or a synthesized main.</p>
+<pre><code><span class="k">fn</span> main() -&gt; [InternResult] {
+    <span class="k">return</span> intern_batch(<span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>);
 }
 </code></pre>
 </section>
