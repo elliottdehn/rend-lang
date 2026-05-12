@@ -171,6 +171,11 @@ fn scan_stmt(
         Stmt::LetTuple { value, .. } => {
             scan_expr(value, iter_var, states, summaries, found, seen);
         }
+        Stmt::Parallel { stmts, .. } => {
+            for s in stmts {
+                scan_stmt(s, iter_var, states, summaries, found, seen);
+            }
+        }
     }
 }
 

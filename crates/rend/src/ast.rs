@@ -494,6 +494,13 @@ pub enum Stmt {
     Break(Span),
     Continue(Span),
     Expr(Expr),
+    /// `parallel { stmt; stmt; ... }` — every contained statement
+    /// runs in its own shadow `Tx` under rayon; deltas merge back
+    /// in stable declaration order with conflict re-run. `let`
+    /// bindings inside escape the block into the enclosing scope.
+    /// Intra-block references are rejected at typeck: each
+    /// statement may read only names from the enclosing scope.
+    Parallel { stmts: Vec<Stmt>, span: Span },
     /// `emit StructExpr;` — append the struct value to the tx event
     /// log and queue it for `on <Type>` handlers. Any expression
     /// resolving to a `Type::Struct` value is legal; a struct

@@ -162,6 +162,9 @@ fn substitute_params_in_stmt(stmt: &mut Stmt, subst: &HashMap<String, Expr>) {
         Stmt::Emit { value, .. } => substitute_in_expr(value, subst),
         Stmt::Delete { target, .. } => substitute_in_expr(target, subst),
         Stmt::LetTuple { value, .. } => substitute_in_expr(value, subst),
+        Stmt::Parallel { stmts, .. } => {
+            for s in stmts { substitute_params_in_stmt(s, subst); }
+        }
     }
 }
 

@@ -524,6 +524,14 @@ fn annotate_stmt(
         Stmt::Delete { target, .. } => {
             annotate_expr(target, scopes, state_types, ifaces);
         }
+        Stmt::Parallel { stmts, .. } => {
+            // Each inner stmt annotates against the same outer
+            // scope. Intra-block refs are forbidden at check time;
+            // annotation just visits the trees.
+            for s in stmts.iter_mut() {
+                annotate_stmt(s, scopes, state_types, ifaces);
+            }
+        }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Placeholder(_) => {}
     }
 }
@@ -1171,6 +1179,99 @@ fn check_inner(
     Ok(())
 }
 
+/// Collect names bound by `let` / `let (..)` inside a single
+/// statement. Used by `parallel { ... }` to forbid intra-block
+/// references: a stmt may not mention names other stmts in the
+/// same block introduce.
+fn collect_let_bindings(stmt: &Stmt) -> Vec<String> {
+    match stmt {
+        Stmt::Let { name, .. } => vec![name.clone()],
+        Stmt::LetTuple { names, .. } => names.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Walk a statement / expression tree and error if any identifier
+/// reference hits a name in `forbidden`. The `parallel` block's
+/// no-intra-block-ref rule lives here.
+fn check_no_forbidden_refs(
+    stmt: &Stmt,
+    forbidden: &std::collections::HashSet<&str>,
+    block_span: Span,
+) -> Result<(), Error> {
+    use std::collections::HashSet;
+    fn walk_expr(
+        e: &Expr,
+        forbidden: &HashSet<&str>,
+        block_span: Span,
+    ) -> Result<(), Error> {
+        match &e.kind {
+            ExprKind::Ident(name) => {
+                if forbidden.contains(name.as_str()) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!(
+                            "`parallel` block: statement references `{name}`, \
+                             which is `let`-bound by another statement in the \
+                             same block — intra-block references aren't \
+                             allowed (would defeat the parallelism)",
+                        ),
+                        block_span,
+                    ));
+                }
+                Ok(())
+            }
+            ExprKind::Field { target, .. } => walk_expr(target, forbidden, block_span),
+            ExprKind::Index { target, key } => {
+                walk_expr(target, forbidden, block_span)?;
+                walk_expr(key, forbidden, block_span)
+            }
+            ExprKind::Call { args, .. } => {
+                for a in args { walk_expr(a, forbidden, block_span)?; }
+                Ok(())
+            }
+            ExprKind::Binary { lhs, rhs, .. } => {
+                walk_expr(lhs, forbidden, block_span)?;
+                walk_expr(rhs, forbidden, block_span)
+            }
+            ExprKind::Unary { operand, .. } => walk_expr(operand, forbidden, block_span),
+            ExprKind::Array(es) => {
+                for e in es { walk_expr(e, forbidden, block_span)?; }
+                Ok(())
+            }
+            ExprKind::StructLit { fields, .. } => {
+                for (_, e) in fields { walk_expr(e, forbidden, block_span)?; }
+                Ok(())
+            }
+            ExprKind::If { cond, then: _, else_branch: _ } => {
+                // `parallel` body is restricted to flat statements
+                // (no `if`/`for`), but `if` can still appear inside
+                // an RHS expression. Walk the condition; the
+                // then/else branches are block expressions whose
+                // statement walking happens via the outer pass.
+                walk_expr(cond, forbidden, block_span)
+            }
+            // Anything else (literals, enum/match details, comprehensions,
+            // etc.) — we underapproximate by skipping. The block_span
+            // error message still catches the common case (direct refs).
+            _ => Ok(()),
+        }
+    }
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            walk_expr(value, forbidden, block_span)
+        }
+        Stmt::Expr(e) => walk_expr(e, forbidden, block_span),
+        Stmt::Emit { value, .. } => walk_expr(value, forbidden, block_span),
+        Stmt::Assign { target, value, .. } => {
+            walk_expr(target, forbidden, block_span)?;
+            walk_expr(value, forbidden, block_span)
+        }
+        Stmt::Delete { target, .. } => walk_expr(target, forbidden, block_span),
+        _ => Ok(()),
+    }
+}
+
 fn run_sigs(module: &Module) -> Result<HashMap<String, FnSig>, Error> {
     let mut sigs = HashMap::new();
     for imp in &module.imports {
@@ -1478,6 +1579,36 @@ impl TypeChecker {
                         format!("emit requires a struct value, got {ty}"),
                         value.span,
                     ));
+                }
+                Ok(false)
+            }
+            Stmt::Parallel { stmts, span } => {
+                // Step 1: enforce "no intra-block references". For
+                // each stmt, collect names bound by *other* stmts in
+                // the same block; the stmt's expressions may not
+                // reference any of them. The block's `let`s lift
+                // into the enclosing scope (so the names outlive
+                // the block).
+                let bindings: Vec<Vec<String>> = stmts
+                    .iter()
+                    .map(|s| collect_let_bindings(s))
+                    .collect();
+                for (i, s) in stmts.iter().enumerate() {
+                    let mut forbidden: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
+                    for (j, names) in bindings.iter().enumerate() {
+                        if j == i { continue; }
+                        for n in names { forbidden.insert(n.as_str()); }
+                    }
+                    if !forbidden.is_empty() {
+                        check_no_forbidden_refs(s, &forbidden, *span)?;
+                    }
+                }
+                // Step 2: check each stmt as usual. Bindings flow
+                // into `env` so post-block code sees them — that's
+                // the "let bindings outlive the block" contract.
+                for s in stmts {
+                    self.check_stmt(s, env, expected_ret)?;
                 }
                 Ok(false)
             }

@@ -276,6 +276,11 @@ fn classify_stmt(stmt: &Stmt, acc: &mut EffectClass, ctx: &Ctx) {
             classify_expr(value, acc, ctx);
         }
         Stmt::LetTuple { value, .. } => classify_expr(value, acc, ctx),
+        Stmt::Parallel { stmts, .. } => {
+            for s in stmts {
+                classify_stmt(s, acc, ctx);
+            }
+        }
     }
 }
 

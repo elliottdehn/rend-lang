@@ -94,8 +94,13 @@ const VERSION_MAJOR: u8 = 0;
 ///         groups, `is_pub`) so a tx compiled against a deployed
 ///         dep can resolve cross-module `m::T` references against
 ///         the dep's pub structs.
+///   0.17 → `parallel { stmt; stmt; ... }` blocks. New
+///         `ParallelBegin` / `ParallelYield` opcodes; the VM
+///         dispatches inner ranges under rayon, each in its own
+///         shadow Tx, and merges deltas in stable declaration
+///         order with conflict re-run.
 /// Older readers can't decode newer formats.
-const VERSION_MINOR: u8 = 16;
+const VERSION_MINOR: u8 = 17;
 
 /// A compiled artifact: bytes + content hash + the materialized
 /// `BcModule`s. Either `bytes` or `modules` is canonical depending
@@ -897,6 +902,8 @@ mod op {
     pub const PMAP_REMOVE_FROM_LIST: u8 = 0x46;
     pub const PBTREE_REMOVE_UNIQUE: u8 = 0x47;
     pub const PBTREE_REMOVE_FROM_LIST: u8 = 0x48;
+    pub const PARALLEL_BEGIN: u8       = 0x49;
+    pub const PARALLEL_YIELD: u8       = 0x4a;
 }
 
 fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
@@ -980,6 +987,26 @@ fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
         }
         Instr::Emit { value } => {
             out.push(op::EMIT); write_u16(out, *value);
+        }
+        Instr::ParallelBegin { ranges, after_pc } => {
+            out.push(op::PARALLEL_BEGIN);
+            write_u32(out, ranges.len() as u32);
+            for r in ranges {
+                write_u32(out, r.start);
+                write_u32(out, r.end);
+                match r.dst {
+                    Some(d) => { out.push(1); write_u16(out, d); }
+                    None => out.push(0),
+                }
+            }
+            write_u32(out, *after_pc);
+        }
+        Instr::ParallelYield { value } => {
+            out.push(op::PARALLEL_YIELD);
+            match value {
+                Some(v) => { out.push(1); write_u16(out, *v); }
+                None => out.push(0),
+            }
         }
         Instr::Context { dst, kind } => { out.push(op::CONTEXT); write_u16(out, *dst); out.push(*kind); }
         Instr::MakeTuple { dst, args_start, n } => {
@@ -1196,6 +1223,24 @@ fn read_instr(r: &mut Reader) -> Result<Instr, Error> {
         op::READ_BATCH  => Instr::ReadBatch  { group_idx: r.read_u16()? },
         op::PREFETCH_MAP => Instr::PrefetchMap { arr_reg: r.read_u16()?, state_idx: r.read_u16()? },
         op::EMIT => Instr::Emit { value: r.read_u16()? },
+        op::PARALLEL_BEGIN => {
+            let n = r.read_u32()? as usize;
+            let mut ranges = Vec::with_capacity(n);
+            for _ in 0..n {
+                let start = r.read_u32()?;
+                let end = r.read_u32()?;
+                let has = r.read_u8()?;
+                let dst = if has != 0 { Some(r.read_u16()?) } else { None };
+                ranges.push(crate::bc::ParallelRange { start, end, dst });
+            }
+            let after_pc = r.read_u32()?;
+            Instr::ParallelBegin { ranges, after_pc }
+        }
+        op::PARALLEL_YIELD => {
+            let has = r.read_u8()?;
+            let value = if has != 0 { Some(r.read_u16()?) } else { None };
+            Instr::ParallelYield { value }
+        }
         op::CONTEXT => Instr::Context { dst: r.read_u16()?, kind: r.read_u8()? },
         op::MAKE_TUPLE => Instr::MakeTuple { dst: r.read_u16()?, args_start: r.read_u16()?, n: r.read_u16()? },
         op::TUPLE_GET  => Instr::TupleGet  { dst: r.read_u16()?, src: r.read_u16()?, index: r.read_u16()? },

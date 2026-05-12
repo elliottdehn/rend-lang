@@ -58,6 +58,17 @@ pub struct PathSpec {
     pub is_blob: bool,
 }
 
+/// One range inside a `ParallelBegin` instruction. Each range
+/// holds the bytecode for one statement of a `parallel { ... }`
+/// block; the VM runs them under rayon, then collects their
+/// deltas + the optional dst register's value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParallelRange {
+    pub start: u32,
+    pub end: u32,
+    pub dst: Option<u16>,
+}
+
 /// Bytecode-side description of a struct: the name plus its
 /// per-field type metadata. `MakeStruct` uses `field_names` to
 /// attach names to values at construction; the typed-resolution
@@ -259,6 +270,19 @@ pub enum Instr {
     /// fields out of the Value::Struct at execution time, so this
     /// instruction needs no static event-shape table.
     Emit { value: u16 },
+    /// Start of a `parallel { ... }` block. The VM dispatches each
+    /// range in parallel under rayon, each running in its own
+    /// shadow `Tx` with a cloned register file. Deltas merge in
+    /// stable declaration order with conflict re-run. After the
+    /// block, control resumes at `after_pc`, skipping past every
+    /// range's inlined bytecode.
+    ParallelBegin { ranges: Vec<ParallelRange>, after_pc: u32 },
+    /// Marks the end of a parallel range. The sub-task running this
+    /// range returns the contents of `value` (or `Unit` if `None`)
+    /// to the scheduler, which binds it back to the range's `dst`
+    /// register in the parent. Outside a `parallel` block it's an
+    /// error.
+    ParallelYield { value: Option<u16> },
     /// Read a tx-context field. `kind`: 0 = msg_sender (Address),
     /// 1 = block_timestamp (u64), 2 = block_number (u64).
     Context { dst: u16, kind: u8 },

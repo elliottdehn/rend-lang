@@ -666,6 +666,57 @@ impl<'a> FnCompiler<'a> {
                 }
                 Ok(())
             }
+            Stmt::Parallel { stmts, .. } => {
+                // Slice-1 lowering: emit each inner stmt's bytecode
+                // inline within the surrounding fn. The wrapping
+                // `Instr::ParallelBegin { ranges }` instruction lists
+                // each stmt's (start_pc, end_pc, optional_dst_reg);
+                // the VM uses that metadata to dispatch the ranges
+                // in parallel under rayon, each in its own shadow Tx,
+                // and merge deltas in stable declaration order with
+                // conflict re-run. After the block, control resumes
+                // at `after_pc`. `let` bindings inside escape into
+                // the current scope (typeck already validated that
+                // no two inner stmts reference each other's names).
+                let parallel_pos = self.code.len();
+                // Reserve placeholder; patched below once ranges are known.
+                self.code.push(Instr::ParallelBegin {
+                    ranges: Vec::new(),
+                    after_pc: 0,
+                });
+                let mut ranges: Vec<crate::bc::ParallelRange> = Vec::new();
+                for s in stmts {
+                    let start = self.code.len() as u32;
+                    let dst = match s {
+                        Stmt::Let { name, value, .. } => {
+                            // Pre-allocate the binding's register in
+                            // the outer scope; the stmt's expr writes
+                            // straight into it.
+                            let r = self.alloc();
+                            self.compile_expr_into(value, r)?;
+                            self.scopes.last_mut().unwrap().insert(name.clone(), r);
+                            Some(r)
+                        }
+                        _ => {
+                            self.compile_stmt(s)?;
+                            None
+                        }
+                    };
+                    // Marker that ends this range's bytecode in the
+                    // VM's per-task dispatch. Plain `Return` would
+                    // exit the surrounding fn; we need a sentinel
+                    // that ends only the sub-task.
+                    self.code.push(Instr::ParallelYield { value: dst });
+                    let end = self.code.len() as u32;
+                    ranges.push(crate::bc::ParallelRange { start, end, dst });
+                }
+                let after_pc = self.code.len() as u32;
+                self.code[parallel_pos] = Instr::ParallelBegin {
+                    ranges,
+                    after_pc,
+                };
+                Ok(())
+            }
         }
     }
 

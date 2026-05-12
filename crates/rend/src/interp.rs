@@ -669,6 +669,19 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Flow::Normal(Value::Unit))
             }
+            Stmt::Parallel { stmts, .. } => {
+                // Tree-walk reference interp runs the stmts serially.
+                // Bindings go into the current scope so they outlive
+                // the block (the bytecode VM is what parallelizes;
+                // the interp is just the semantic baseline).
+                for s in stmts {
+                    let flow = self.exec_stmt(s, scopes)?;
+                    if !matches!(flow, Flow::Normal(_)) {
+                        return Ok(flow);
+                    }
+                }
+                Ok(Flow::Normal(Value::Unit))
+            }
         }
     }
 

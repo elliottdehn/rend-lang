@@ -701,6 +701,11 @@ impl<'a> Tx<'a> {
             if self.writes.contains_key(cell) || self.reads.contains_key(cell) {
                 continue;
             }
+            // Shadow Tx: parent overlay can supply node bytes
+            // without a KV round-trip.
+            if self.parent_lookup(*cell).is_some() {
+                continue;
+            }
             seen.entry(*cell).or_insert_with(|| {
                 let idx = to_fetch.len();
                 to_fetch.push(*cell);
@@ -734,6 +739,13 @@ impl<'a> Tx<'a> {
                     match v { Value::Bytes(b) => Some(b.clone()), _ => None }
                 } else if let Some(v) = self.reads.get(&cell) {
                     match v { Value::Bytes(b) => Some(b.clone()), _ => None }
+                } else if let Some(v) = self.parent_lookup(cell) {
+                    // Shadow Tx: parent overlay hit — cache locally
+                    // so subsequent walks at the same cell skip the
+                    // lookup, and treat as if KV had returned the
+                    // bytes (an OCC read on the cell).
+                    self.reads.insert(cell, v.clone());
+                    match v { Value::Bytes(b) => Some(b), _ => None }
                 } else {
                     let raw = bytes_by_cell.get(&cell).cloned().unwrap_or(None);
                     let observed = match &raw {

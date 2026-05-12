@@ -248,6 +248,15 @@ fn check_stmt(
             check_expr(target, env, sigs, states, cap_decls)?;
             Ok(())
         }
+        Stmt::Parallel { stmts, .. } => {
+            // Parallel block: walk each inner stmt; affine semantics
+            // are unchanged (a `let` inside still binds into the
+            // outer scope, since intra-block refs are forbidden).
+            for s in stmts {
+                check_stmt(s, env, sigs, states, cap_decls)?;
+            }
+            Ok(())
+        }
         Stmt::LetTuple { names, value, .. } => {
             check_expr(value, env, sigs, states, cap_decls)?;
             // Bind each name as Int (placeholder — the affine pass

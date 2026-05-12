@@ -881,7 +881,7 @@ impl Parser {
         matches!(t,
             Token::Let | Token::Return | Token::While
             | Token::For | Token::Break | Token::Continue | Token::Emit
-            | Token::Delete
+            | Token::Delete | Token::Parallel
         )
     }
 
@@ -945,6 +945,7 @@ impl Parser {
             }
             Token::Emit => self.parse_emit(),
             Token::Delete => self.parse_delete(),
+            Token::Parallel => self.parse_parallel(),
             // `_;` — modifier-body placeholder. The `_` token is
             // lexed as Ident("_"); recognize it here only when
             // followed by `;` so plain identifiers like `_` (or
@@ -1079,6 +1080,49 @@ impl Parser {
         let semi = self.cur_span();
         self.expect(Token::Semi, "expected ';' after emit statement")?;
         Ok(Stmt::Emit { value: Box::new(value), span: Span { start, end: semi.end } })
+    }
+
+    /// `parallel { stmt; stmt; ... }` — each statement runs in its
+    /// own shadow Tx. Restricted to a flat list of statements for
+    /// slice 1 (no nested `if` / `for` / nested `parallel` inside).
+    fn parse_parallel(&mut self) -> Result<Stmt, Error> {
+        let start = self.cur_span().start;
+        self.expect(Token::Parallel, "expected 'parallel'")?;
+        self.expect(Token::LBrace, "expected '{' after 'parallel'")?;
+        let mut stmts = Vec::new();
+        while !self.peek_is(&Token::RBrace) {
+            // Restrict body to the simple statement set. Control
+            // flow inside a parallel block doesn't have meaningful
+            // semantics under the "each stmt is independent" rule
+            // and would only obscure the parallelism.
+            match self.peek_token() {
+                Token::Let | Token::Emit | Token::Delete => {}
+                Token::Parallel => {
+                    let span = self.cur_span();
+                    return Err(Error::new(
+                        ErrorKind::Parse,
+                        "nested `parallel` blocks are not supported",
+                        span,
+                    ));
+                }
+                Token::If | Token::While | Token::For | Token::Return
+                | Token::Break | Token::Continue => {
+                    let span = self.cur_span();
+                    return Err(Error::new(
+                        ErrorKind::Parse,
+                        "`parallel` body only allows `let`, `emit`, \
+                         `delete`, assignments, and call/expression \
+                         statements",
+                        span,
+                    ));
+                }
+                _ => {}
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        let close = self.cur_span();
+        self.expect(Token::RBrace, "expected '}' to close `parallel` block")?;
+        Ok(Stmt::Parallel { stmts, span: Span { start, end: close.end } })
     }
 
     fn parse_let(&mut self) -> Result<Stmt, Error> {

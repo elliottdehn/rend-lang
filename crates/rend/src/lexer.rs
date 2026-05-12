@@ -331,6 +331,7 @@ impl<'a> Lexer<'a> {
             "pure" => Token::Pure,
             "interface" => Token::Interface,
             "while" => Token::While,
+            "parallel" => Token::Parallel,
             "for" => Token::For,
             "in" => Token::In,
             "break" => Token::Break,

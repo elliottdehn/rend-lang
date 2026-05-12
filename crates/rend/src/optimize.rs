@@ -251,6 +251,13 @@ fn reads_pending_dst(instr: &Instr, pending: &HashSet<u16>) -> bool {
         Instr::ReadBatch { .. } => {}
         Instr::PrefetchMap { arr_reg, .. } => srcs.push(*arr_reg),
         Instr::Emit { value } => srcs.push(*value),
+        // Parallel block markers — treated as cluster fences in the
+        // optimizer (the bytecode inside each range is its own
+        // optimization unit; the outer cluster ends here).
+        Instr::ParallelBegin { .. } => {}
+        Instr::ParallelYield { value } => {
+            if let Some(v) = value { srcs.push(*v); }
+        }
         Instr::Context { .. } => {}
         Instr::MakeTuple { args_start, n, .. } => {
             for i in 0..*n { srcs.push(args_start + i); }
@@ -403,6 +410,10 @@ fn cluster_breaker(
         // emit appends to the event log but doesn't read or write
         // state — reads on either side commute around it.
         Instr::Emit { .. } => false,
+        // Parallel block boundaries — definite barriers. The sub-tasks
+        // dispatch inside their own shadow Txs; the outer read cluster
+        // can't reach into them.
+        Instr::ParallelBegin { .. } | Instr::ParallelYield { .. } => true,
         // Context reads are pure constants per-tx; never break.
         Instr::Context { .. } => false,
         // Tuple construct/extract are pure register ops.

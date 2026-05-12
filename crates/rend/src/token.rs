@@ -66,6 +66,11 @@ pub enum Token {
     /// interface value's bound module.
     Dollar,
     While,
+    /// `parallel { stmt; stmt; ... }` — statement-granularity
+    /// parallel execution. Each statement runs in its own shadow
+    /// Tx under rayon; deltas merge in stable declaration order
+    /// with intra-tx OCC re-run on conflict.
+    Parallel,
     For,
     In,
     Break,

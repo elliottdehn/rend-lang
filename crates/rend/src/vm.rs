@@ -131,6 +131,18 @@ impl<'a, 'tx> VmState<'a, 'tx> {
         if dispatch.is_empty() {
             return Ok(());
         }
+        // Single-handler fast path: no need to spawn a rayon task
+        // or fork a shadow — calling inline keeps the recursion
+        // depth flat and avoids per-level scheduler overhead. This
+        // is the common case (most emits have exactly one
+        // handler), and it's also what keeps deeply-cyclic emit
+        // chains from blowing the Rust stack with rayon scope
+        // frames before fuel runs out.
+        if dispatch.len() == 1 {
+            let (mi, hi) = dispatch[0];
+            let _ = self.call(mi, hi as usize, std::slice::from_ref(struct_val))?;
+            return Ok(());
+        }
         // Parallel speculative run. Each task forks a shadow Tx
         // from the parent and runs its assigned handler. Captures
         // are `Sync` references; no cloning of read/write sets.
@@ -248,15 +260,31 @@ impl<'a, 'tx> VmState<'a, 'tx> {
     }
 
     fn call_body(&mut self, module_idx: usize, fn_idx: usize, args: &[Value]) -> Result<Value, Error> {
-        let module = &self.modules[module_idx];
-        let f = &module.functions[fn_idx];
+        let f = &self.modules[module_idx].functions[fn_idx];
         let mut regs: Vec<Value> = (0..f.n_regs.max(args.len() as u16))
             .map(|_| Value::Unit)
             .collect();
         for (i, a) in args.iter().enumerate() {
             regs[i] = a.clone();
         }
-        let mut pc: usize = 0;
+        self.call_body_at(module_idx, fn_idx, regs, 0)
+    }
+
+    /// Entry-point variant for `parallel { ... }` sub-tasks. Caller
+    /// supplies a pre-populated register file (clone of the parent's
+    /// regs) and the PC at which to start interpreting. The loop
+    /// terminates on the usual `Return` / `ReturnUnit` *and* on the
+    /// new `ParallelYield` marker.
+    fn call_body_at(
+        &mut self,
+        module_idx: usize,
+        fn_idx: usize,
+        mut regs: Vec<Value>,
+        pc_start: usize,
+    ) -> Result<Value, Error> {
+        let module = &self.modules[module_idx];
+        let f = &module.functions[fn_idx];
+        let mut pc: usize = pc_start;
         loop {
             self.tick()?;
             let instr = f.code.get(pc).cloned().ok_or_else(|| {
@@ -863,6 +891,88 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             format!("unknown context kind {other}"),
                             Span::default(),
                         )),
+                    };
+                }
+                Instr::ParallelBegin { ranges, after_pc } => {
+                    use rayon::prelude::*;
+                    // Snapshot the live register file so each parallel
+                    // task can fork its own copy without sharing
+                    // mutation. Tx state is shared immutably via the
+                    // shadow-of borrow; deltas merge back below.
+                    let regs_snapshot: Vec<Value> = regs.clone();
+                    let host = self.host;
+                    let modules = self.modules;
+                    let fuel_budget = self.fuel;
+                    let parent: &Tx = &*self.tx;
+                    let ranges_vec = ranges.clone();
+                    let results: Vec<Result<(crate::tx::HandlerDelta, Value, u64), Error>> =
+                        ranges_vec
+                            .par_iter()
+                            .map(|range| -> Result<(crate::tx::HandlerDelta, Value, u64), Error> {
+                                let mut shadow = Tx::shadow_of(parent);
+                                let mut sub = VmState {
+                                    fuel: fuel_budget,
+                                    host,
+                                    tx: &mut shadow,
+                                    modules,
+                                };
+                                let value = sub.call_body_at(
+                                    module_idx,
+                                    fn_idx,
+                                    regs_snapshot.clone(),
+                                    range.start as usize,
+                                )?;
+                                let fuel_used = fuel_budget.saturating_sub(sub.fuel);
+                                Ok((shadow.into_delta(), value, fuel_used))
+                            })
+                            .collect();
+                    // Stable-order merge with conflict re-run.
+                    let mut batch_writes: std::collections::HashSet<u128> =
+                        std::collections::HashSet::new();
+                    for (i, res) in results.into_iter().enumerate() {
+                        let (delta, value, fuel_used) = res?;
+                        self.fuel = self.fuel.saturating_sub(fuel_used);
+                        let conflict = delta.reads.keys().any(|k| batch_writes.contains(k));
+                        let (final_delta, final_value) = if conflict {
+                            // Re-run against the now-merged parent.
+                            let mut shadow = Tx::shadow_of(&*self.tx);
+                            let pre = self.fuel;
+                            let mut sub = VmState {
+                                fuel: pre,
+                                host: self.host,
+                                tx: &mut shadow,
+                                modules: self.modules,
+                            };
+                            let v = sub.call_body_at(
+                                module_idx,
+                                fn_idx,
+                                regs.clone(),
+                                ranges_vec[i].start as usize,
+                            )?;
+                            let used = pre.saturating_sub(sub.fuel);
+                            self.fuel = self.fuel.saturating_sub(used);
+                            (shadow.into_delta(), v)
+                        } else {
+                            (delta, value)
+                        };
+                        batch_writes.extend(final_delta.writes.keys().copied());
+                        self.tx.merge_delta(final_delta);
+                        if let Some(dst) = ranges_vec[i].dst {
+                            regs[dst as usize] = final_value;
+                        }
+                    }
+                    pc = after_pc as usize;
+                }
+                Instr::ParallelYield { value } => {
+                    // The sub-task running this range returns its
+                    // yielded value. The parent's main loop never
+                    // sees this — it skips past via `after_pc` —
+                    // so encountering it here means the user (or
+                    // a future bug) leaked the marker out of a
+                    // parallel block.
+                    return match value {
+                        Some(r) => Ok(self.force_reg(&mut regs, r)),
+                        None => Ok(Value::Unit),
                     };
                 }
                 Instr::Emit { value } => {
