@@ -1123,6 +1123,43 @@ impl Parser {
     fn parse_parallel(&mut self) -> Result<Stmt, Error> {
         let start = self.cur_span().start;
         self.expect(Token::Parallel, "expected 'parallel'")?;
+        // `parallel for <id> in <source> to <output> { body }` —
+        // the for-form is a separate construct from the bare
+        // `parallel { ... }` block; lookahead picks between them.
+        if self.peek_is(&Token::For) {
+            self.advance(); // consume `for`
+            let id_var = self.expect_ident()?;
+            self.expect(Token::In, "expected 'in' in parallel-for")?;
+            let saved = self.no_struct_literal;
+            self.no_struct_literal = true;
+            let source = self.parse_expr()?;
+            // `to` is a contextual keyword — lexed as Ident("to")
+            // everywhere else, recognized here so user code that
+            // names a parameter or local `to` (e.g. `transfer(to:
+            // Address, ...)`) keeps working.
+            match self.peek_token() {
+                Token::Ident(s) if s == "to" => { self.advance(); }
+                _ => {
+                    let span = self.cur_span();
+                    return Err(Error::new(
+                        ErrorKind::Parse,
+                        "expected 'to' between parallel-for source and output",
+                        span,
+                    ));
+                }
+            }
+            let output = self.parse_expr()?;
+            self.no_struct_literal = saved;
+            let body = self.parse_block()?;
+            let end = body.span.end;
+            return Ok(Stmt::ParallelForTo {
+                id_var,
+                source,
+                output,
+                body,
+                span: Span { start, end },
+            });
+        }
         self.expect(Token::LBrace, "expected '{' after 'parallel'")?;
         let mut stmts = Vec::new();
         while !self.peek_is(&Token::RBrace) {

@@ -975,6 +975,112 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         None => Ok(Value::Unit),
                     };
                 }
+                Instr::ParallelForBegin {
+                    body_start, body_end: _, source_reg, output_reg, id_reg, after_pc,
+                } => {
+                    use rayon::prelude::*;
+                    // Force source and output to concrete arrays.
+                    let source_v = self.force_reg(&mut regs, source_reg);
+                    let output_v = self.force_reg(&mut regs, output_reg);
+                    let source_elems = match source_v {
+                        Value::Array(v) => v,
+                        other => return Err(Error::new(
+                            ErrorKind::Runtime,
+                            format!("parallel-for source must be an array, got {other}"),
+                            Span::default(),
+                        )),
+                    };
+                    let mut output_elems = match output_v {
+                        Value::Array(v) => v,
+                        other => return Err(Error::new(
+                            ErrorKind::Runtime,
+                            format!("parallel-for output must be an array, got {other}"),
+                            Span::default(),
+                        )),
+                    };
+                    let n = source_elems.len();
+                    if output_elems.len() != n {
+                        return Err(Error::new(
+                            ErrorKind::Runtime,
+                            format!(
+                                "parallel-for length mismatch: source={n}, output={}",
+                                output_elems.len(),
+                            ),
+                            Span::default(),
+                        ));
+                    }
+                    // Snapshot regs for the per-leg patch + dispatch.
+                    let regs_snapshot: Vec<Value> = regs.clone();
+                    let host = self.host;
+                    let modules = self.modules;
+                    let fuel_budget = self.fuel;
+                    let parent: &Tx = &*self.tx;
+                    let body_start_pc = body_start as usize;
+                    let results: Vec<Result<(crate::tx::HandlerDelta, Value, u64), Error>> =
+                        (0..n)
+                            .into_par_iter()
+                            .map(|i| -> Result<(crate::tx::HandlerDelta, Value, u64), Error> {
+                                let mut leg_regs = regs_snapshot.clone();
+                                leg_regs[id_reg as usize] = source_elems[i].clone();
+                                let mut shadow = Tx::shadow_of(parent);
+                                let mut sub = VmState {
+                                    fuel: fuel_budget,
+                                    host,
+                                    tx: &mut shadow,
+                                    modules,
+                                };
+                                let value = sub.call_body_at(
+                                    module_idx,
+                                    fn_idx,
+                                    leg_regs,
+                                    body_start_pc,
+                                )?;
+                                let fuel_used = fuel_budget.saturating_sub(sub.fuel);
+                                Ok((shadow.into_delta(), value, fuel_used))
+                            })
+                            .collect();
+                    // Stable-order merge with conflict re-run.
+                    let mut batch_writes: std::collections::HashSet<u128> =
+                        std::collections::HashSet::new();
+                    for (i, res) in results.into_iter().enumerate() {
+                        let (delta, value, fuel_used) = res?;
+                        self.fuel = self.fuel.saturating_sub(fuel_used);
+                        let conflict =
+                            delta.reads.keys().any(|k| batch_writes.contains(k));
+                        let (final_delta, final_value) = if conflict {
+                            // Re-run this leg against the merged parent.
+                            let mut leg_regs = regs.clone();
+                            leg_regs[id_reg as usize] = source_elems[i].clone();
+                            let mut shadow = Tx::shadow_of(&*self.tx);
+                            let pre = self.fuel;
+                            let mut sub = VmState {
+                                fuel: pre,
+                                host: self.host,
+                                tx: &mut shadow,
+                                modules: self.modules,
+                            };
+                            let v = sub.call_body_at(
+                                module_idx,
+                                fn_idx,
+                                leg_regs,
+                                body_start_pc,
+                            )?;
+                            let used = pre.saturating_sub(sub.fuel);
+                            self.fuel = self.fuel.saturating_sub(used);
+                            (shadow.into_delta(), v)
+                        } else {
+                            (delta, value)
+                        };
+                        batch_writes.extend(final_delta.writes.keys().copied());
+                        self.tx.merge_delta(final_delta);
+                        // Output slot disjoint by construction; the
+                        // dispatcher writes back into the buffer in
+                        // index order. Nothing to reconcile here.
+                        output_elems[i] = final_value;
+                    }
+                    regs[output_reg as usize] = Value::Array(output_elems);
+                    pc = after_pc as usize;
+                }
                 Instr::Emit { value } => {
                     // Force, log, then dispatch handlers in parallel
                     // shadow-Tx batches. The parallel scheduler

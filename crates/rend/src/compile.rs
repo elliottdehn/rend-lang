@@ -799,6 +799,71 @@ impl<'a> FnCompiler<'a> {
                 };
                 Ok(())
             }
+            Stmt::ParallelForTo { id_var, source, output, body, .. } => {
+                // Source is evaluated once into a fresh register and
+                // frozen as the per-leg id pool.
+                let source_reg = self.alloc();
+                self.compile_expr_into(source, source_reg)?;
+                // Output must be a local Ident — slice 1 doesn't
+                // support arbitrary lvalues here. We resolve it to
+                // its existing local register so the dispatcher's
+                // in-place writes are visible after the block (going
+                // through `compile_expr_into` would clone the array
+                // into a fresh reg and the mutation wouldn't escape).
+                let output_reg = match &output.kind {
+                    ExprKind::Ident(name) => {
+                        self.lookup_local(name).ok_or_else(|| Error::new(
+                            ErrorKind::Type,
+                            format!(
+                                "parallel-for output `{name}` must be a local array binding",
+                            ),
+                            output.span,
+                        ))?
+                    }
+                    _ => return Err(Error::new(
+                        ErrorKind::Type,
+                        "parallel-for output must be a local array binding (slice 1)",
+                        output.span,
+                    )),
+                };
+                // Reserve a register for the per-iteration id binding.
+                // Each parallel leg patches this reg before running
+                // body bytecode; from the body's perspective `id_var`
+                // is just a local of type u64.
+                let id_reg = self.alloc();
+                self.scopes.push(HashMap::new());
+                self.scopes.last_mut().unwrap().insert(id_var.clone(), id_reg);
+                // Placeholder for the dispatcher op; patched below
+                // once body_start/body_end/after_pc are known.
+                let dispatch_pos = self.code.len();
+                self.code.push(Instr::ParallelForBegin {
+                    body_start: 0,
+                    body_end: 0,
+                    source_reg,
+                    output_reg,
+                    id_reg,
+                    after_pc: 0,
+                });
+                // Compile the body. Tail value lives in `tail_reg`;
+                // body terminates with ParallelYield(tail_reg) so the
+                // dispatcher captures it.
+                let body_start = self.code.len() as u32;
+                let tail_reg = self.alloc();
+                self.compile_block_into(body, tail_reg)?;
+                self.code.push(Instr::ParallelYield { value: Some(tail_reg) });
+                let body_end = self.code.len() as u32;
+                self.scopes.pop();
+                let after_pc = self.code.len() as u32;
+                self.code[dispatch_pos] = Instr::ParallelForBegin {
+                    body_start,
+                    body_end,
+                    source_reg,
+                    output_reg,
+                    id_reg,
+                    after_pc,
+                };
+                Ok(())
+            }
         }
     }
 

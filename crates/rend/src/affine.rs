@@ -259,6 +259,20 @@ fn check_stmt(
             }
             Ok(())
         }
+        Stmt::ParallelForTo { id_var, source, output, body, .. } => {
+            check_expr(source, env, sigs, states, cap_decls)?;
+            check_expr(output, env, sigs, states, cap_decls)?;
+            let snapshot = env.clone();
+            env.push(HashMap::new());
+            env.last_mut().unwrap().insert(
+                id_var.clone(),
+                Binding { ty: Type::U64, moved_at: None },
+            );
+            check_block(body, env, sigs, states, cap_decls)?;
+            env.pop();
+            *env = snapshot;
+            Ok(())
+        }
         Stmt::LetTuple { names, value, .. } => {
             check_expr(value, env, sigs, states, cap_decls)?;
             // Bind each name as Int (placeholder — the affine pass

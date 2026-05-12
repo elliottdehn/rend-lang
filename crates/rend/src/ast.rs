@@ -513,6 +513,26 @@ pub enum Stmt {
     /// Intra-block references are rejected at typeck: each
     /// statement may read only names from the enclosing scope.
     Parallel { stmts: Vec<Stmt>, span: Span },
+    /// `parallel for <id_var> in <source: [u64]> to <output: [T]> { body }`.
+    /// Runs `body` once per element of `source` in parallel — each iteration
+    /// in its own shadow `Tx`, with `id_var` bound to `source[idx]`. The
+    /// body's tail expression evaluates to a value of `T` that the dispatcher
+    /// writes to `output[idx]`; reaching `continue` skips the write (the
+    /// slot stays at `T::default()`).
+    ///
+    /// Lengths of `source` and `output` are checked equal at runtime
+    /// (typeck can't statically prove equality of two int_exprs). The
+    /// output buffer's slot disjointness is structural: no two iterations
+    /// ever touch the same `output[idx]`, so the merge has nothing to
+    /// reconcile on the buffer side. State writes inside `body` still
+    /// go through the shadow-Tx delta merge with conflict re-run.
+    ParallelForTo {
+        id_var: String,
+        source: Expr,
+        output: Expr,
+        body: Block,
+        span: Span,
+    },
     /// `emit StructExpr;` — append the struct value to the tx event
     /// log and queue it for `on <Type>` handlers. Any expression
     /// resolving to a `Type::Struct` value is legal; a struct

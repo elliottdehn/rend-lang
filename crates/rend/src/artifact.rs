@@ -904,6 +904,7 @@ mod op {
     pub const PBTREE_REMOVE_FROM_LIST: u8 = 0x48;
     pub const PARALLEL_BEGIN: u8       = 0x49;
     pub const PARALLEL_YIELD: u8       = 0x4a;
+    pub const PARALLEL_FOR_BEGIN: u8   = 0x4b;
 }
 
 fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
@@ -1007,6 +1008,17 @@ fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
                 Some(v) => { out.push(1); write_u16(out, *v); }
                 None => out.push(0),
             }
+        }
+        Instr::ParallelForBegin {
+            body_start, body_end, source_reg, output_reg, id_reg, after_pc,
+        } => {
+            out.push(op::PARALLEL_FOR_BEGIN);
+            write_u32(out, *body_start);
+            write_u32(out, *body_end);
+            write_u16(out, *source_reg);
+            write_u16(out, *output_reg);
+            write_u16(out, *id_reg);
+            write_u32(out, *after_pc);
         }
         Instr::Context { dst, kind } => { out.push(op::CONTEXT); write_u16(out, *dst); out.push(*kind); }
         Instr::MakeTuple { dst, args_start, n } => {
@@ -1240,6 +1252,17 @@ fn read_instr(r: &mut Reader) -> Result<Instr, Error> {
             let has = r.read_u8()?;
             let value = if has != 0 { Some(r.read_u16()?) } else { None };
             Instr::ParallelYield { value }
+        }
+        op::PARALLEL_FOR_BEGIN => {
+            let body_start = r.read_u32()?;
+            let body_end = r.read_u32()?;
+            let source_reg = r.read_u16()?;
+            let output_reg = r.read_u16()?;
+            let id_reg = r.read_u16()?;
+            let after_pc = r.read_u32()?;
+            Instr::ParallelForBegin {
+                body_start, body_end, source_reg, output_reg, id_reg, after_pc,
+            }
         }
         op::CONTEXT => Instr::Context { dst: r.read_u16()?, kind: r.read_u8()? },
         op::MAKE_TUPLE => Instr::MakeTuple { dst: r.read_u16()?, args_start: r.read_u16()?, n: r.read_u16()? },

@@ -176,6 +176,13 @@ fn scan_stmt(
                 scan_stmt(s, iter_var, states, summaries, found, seen);
             }
         }
+        Stmt::ParallelForTo { source, output, body, .. } => {
+            scan_expr(source, iter_var, states, summaries, found, seen);
+            scan_expr(output, iter_var, states, summaries, found, seen);
+            for s in &body.stmts {
+                scan_stmt(s, iter_var, states, summaries, found, seen);
+            }
+        }
     }
 }
 

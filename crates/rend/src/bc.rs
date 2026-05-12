@@ -283,6 +283,24 @@ pub enum Instr {
     /// register in the parent. Outside a `parallel` block it's an
     /// error.
     ParallelYield { value: Option<u16> },
+    /// `parallel for id in <source> to <output> { body }` — dynamic
+    /// dispatch over a runtime-sized batch. Reads `source_reg` as
+    /// `[u64]` and `output_reg` as `[T]` (same length, runtime-
+    /// checked). Spawns N parallel tasks under rayon; each task
+    /// clones the register file, patches `id_reg <- source[i]`,
+    /// runs body bytecode in `[body_start, body_end)` (terminated
+    /// by `ParallelYield`), and returns its tail value. Deltas
+    /// merge in stable order with conflict re-run; yielded values
+    /// are written sequentially into `output[i]`. After the block,
+    /// control resumes at `after_pc`.
+    ParallelForBegin {
+        body_start: u32,
+        body_end: u32,
+        source_reg: u16,
+        output_reg: u16,
+        id_reg: u16,
+        after_pc: u32,
+    },
     /// Read a tx-context field. `kind`: 0 = msg_sender (Address),
     /// 1 = block_timestamp (u64), 2 = block_number (u64).
     Context { dst: u16, kind: u8 },

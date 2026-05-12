@@ -683,6 +683,86 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Flow::Normal(Value::Unit))
             }
+            Stmt::ParallelForTo { id_var, source, output, body, span } => {
+                // Reference semantics — serial loop. Bytecode VM will
+                // dispatch in parallel; observable result is the same
+                // because slot writes are disjoint by construction.
+                let src_v = self.eval(source, scopes)?;
+                let Value::Array(src_elems) = src_v else {
+                    return Err(Error::new(
+                        ErrorKind::Runtime,
+                        "parallel-for source must evaluate to an array",
+                        source.span,
+                    ));
+                };
+                // Output must be a local Ident — slice 1 doesn't
+                // support arbitrary lvalues here (state cells, nested
+                // indexing). The bound value's current array contents
+                // are used as the default for slots not overwritten
+                // by the loop body (continue / break skip a slot).
+                let out_name = match &output.kind {
+                    ExprKind::Ident(s) => s.clone(),
+                    _ => return Err(Error::new(
+                        ErrorKind::Runtime,
+                        "parallel-for output must be a local array binding",
+                        output.span,
+                    )),
+                };
+                let mut out_arr: Vec<Value> = {
+                    let mut found: Option<Vec<Value>> = None;
+                    for s in scopes.iter() {
+                        if let Some(v) = s.vars.get(&out_name) {
+                            match v {
+                                Value::Array(a) => { found = Some(a.clone()); }
+                                _ => return Err(Error::new(
+                                    ErrorKind::Runtime,
+                                    format!("parallel-for output `{out_name}` must be an array"),
+                                    output.span,
+                                )),
+                            }
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(v) => v,
+                        None => return Err(Error::new(
+                            ErrorKind::Runtime,
+                            format!("parallel-for output `{out_name}` is not bound"),
+                            output.span,
+                        )),
+                    }
+                };
+                if out_arr.len() != src_elems.len() {
+                    return Err(Error::new(
+                        ErrorKind::Runtime,
+                        format!(
+                            "parallel-for source length {} != output length {}",
+                            src_elems.len(), out_arr.len(),
+                        ),
+                        *span,
+                    ));
+                }
+                for (i, id_val) in src_elems.into_iter().enumerate() {
+                    scopes.push(Scope::default());
+                    scopes.last_mut().unwrap().vars.insert(id_var.clone(), id_val);
+                    let flow = self.exec_block(body, scopes)?;
+                    scopes.pop();
+                    match flow {
+                        Flow::Normal(v) => { out_arr[i] = v; }
+                        Flow::Continue => {} // slot keeps existing value
+                        Flow::Break => break,
+                        Flow::Return(v) => return Ok(Flow::Return(v)),
+                    }
+                }
+                // Write the mutated array back to its binding.
+                for s in scopes.iter_mut() {
+                    if s.vars.contains_key(&out_name) {
+                        s.vars.insert(out_name.clone(), Value::Array(out_arr));
+                        break;
+                    }
+                }
+                Ok(Flow::Normal(Value::Unit))
+            }
         }
     }
 

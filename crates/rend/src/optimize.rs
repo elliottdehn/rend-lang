@@ -258,6 +258,10 @@ fn reads_pending_dst(instr: &Instr, pending: &HashSet<u16>) -> bool {
         Instr::ParallelYield { value } => {
             if let Some(v) = value { srcs.push(*v); }
         }
+        Instr::ParallelForBegin { source_reg, output_reg, .. } => {
+            srcs.push(*source_reg);
+            srcs.push(*output_reg);
+        }
         Instr::Context { .. } => {}
         Instr::MakeTuple { args_start, n, .. } => {
             for i in 0..*n { srcs.push(args_start + i); }
@@ -414,6 +418,7 @@ fn cluster_breaker(
         // dispatch inside their own shadow Txs; the outer read cluster
         // can't reach into them.
         Instr::ParallelBegin { .. } | Instr::ParallelYield { .. } => true,
+        Instr::ParallelForBegin { .. } => true,
         // Context reads are pure constants per-tx; never break.
         Instr::Context { .. } => false,
         // Tuple construct/extract are pure register ops.

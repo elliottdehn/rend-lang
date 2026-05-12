@@ -532,6 +532,14 @@ fn annotate_stmt(
                 annotate_stmt(s, scopes, state_types, ifaces);
             }
         }
+        Stmt::ParallelForTo { id_var, source, output, body, .. } => {
+            annotate_expr(source, scopes, state_types, ifaces);
+            annotate_expr(output, scopes, state_types, ifaces);
+            scopes.push(HashMap::new());
+            scopes.last_mut().unwrap().insert(id_var.clone(), Type::U64);
+            annotate_block(body, scopes, state_types, ifaces);
+            scopes.pop();
+        }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Placeholder(_) => {}
     }
 }
@@ -1648,6 +1656,53 @@ impl TypeChecker {
                 // the "let bindings outlive the block" contract.
                 for s in stmts {
                     self.check_stmt(s, env, expected_ret)?;
+                }
+                Ok(false)
+            }
+            Stmt::ParallelForTo { id_var, source, output, body, span } => {
+                // Source must be [u64] — slice 1 fixes the id type at
+                // u64 (matches the `reserve N from state` story, where
+                // a state counter yields u64 ids). Future slices may
+                // relax this to any [T] once typeck and the parallel
+                // dispatcher learn to thread arbitrary element types.
+                let src_ty = self.check_expr(source, env)?;
+                match &src_ty {
+                    Type::Array(elem) if matches!(**elem, Type::U64) => {}
+                    _ => return Err(Error::new(
+                        ErrorKind::Type,
+                        format!(
+                            "`parallel for ... in` source must be `[u64]`, got {src_ty}",
+                        ),
+                        *span,
+                    )),
+                }
+                // Output must be [T] for some T; body tail must
+                // produce a value compatible with T.
+                let out_ty = self.check_expr(output, env)?;
+                let elem_ty = match &out_ty {
+                    Type::Array(e) => (**e).clone(),
+                    _ => return Err(Error::new(
+                        ErrorKind::Type,
+                        format!(
+                            "`parallel for ... to` output must be an array, got {out_ty}",
+                        ),
+                        *span,
+                    )),
+                };
+                // Body type-checks against the outer scope plus the
+                // per-iteration id binding.
+                env.push(HashMap::new());
+                env.last_mut().unwrap().insert(id_var.clone(), Type::U64);
+                let body_tail = self.check_block_as_expr(body, env)?;
+                env.pop();
+                if !types_compatible(&body_tail, &elem_ty) {
+                    return Err(Error::new(
+                        ErrorKind::Type,
+                        format!(
+                            "`parallel for ... to` body must yield `{elem_ty}` for the output slot, got `{body_tail}`",
+                        ),
+                        *span,
+                    ));
                 }
                 Ok(false)
             }

@@ -281,6 +281,15 @@ fn classify_stmt(stmt: &Stmt, acc: &mut EffectClass, ctx: &Ctx) {
                 classify_stmt(s, acc, ctx);
             }
         }
+        Stmt::ParallelForTo { source, output, body, .. } => {
+            classify_expr(source, acc, ctx);
+            classify_expr(output, acc, ctx);
+            // Body writes the slot of the output buffer per iteration —
+            // a state write only if `output` resolves to a state cell.
+            // The body's expression effects subsume whatever it
+            // reads / calls / emits internally.
+            classify_block(body, acc, ctx);
+        }
     }
 }
 

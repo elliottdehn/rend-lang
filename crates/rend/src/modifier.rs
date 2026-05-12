@@ -165,6 +165,11 @@ fn substitute_params_in_stmt(stmt: &mut Stmt, subst: &HashMap<String, Expr>) {
         Stmt::Parallel { stmts, .. } => {
             for s in stmts { substitute_params_in_stmt(s, subst); }
         }
+        Stmt::ParallelForTo { source, output, body, .. } => {
+            substitute_in_expr(source, subst);
+            substitute_in_expr(output, subst);
+            for s in &mut body.stmts { substitute_params_in_stmt(s, subst); }
+        }
     }
 }
 
