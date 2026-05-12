@@ -90,8 +90,12 @@ const VERSION_MAJOR: u8 = 0;
 ///         → ordered handler fn indices). `event` decl/positional
 ///         emit removed; `Instr::Emit` now takes a single value
 ///         register holding the struct payload.
+///   0.16 → `StructShape` carries full field metadata (types,
+///         groups, `is_pub`) so a tx compiled against a deployed
+///         dep can resolve cross-module `m::T` references against
+///         the dep's pub structs.
 /// Older readers can't decode newer formats.
-const VERSION_MINOR: u8 = 15;
+const VERSION_MINOR: u8 = 16;
 
 /// A compiled artifact: bytes + content hash + the materialized
 /// `BcModule`s. Either `bytes` or `modules` is canonical depending
@@ -208,7 +212,15 @@ fn write_module(out: &mut Vec<u8>, m: &BcModule) {
     for s in &m.struct_shapes {
         write_str(out, &s.name);
         write_u32(out, s.field_names.len() as u32);
-        for n in &s.field_names { write_str(out, n); }
+        for (i, n) in s.field_names.iter().enumerate() {
+            write_str(out, n);
+            write_type(out, &s.field_types[i]);
+            match &s.field_groups[i] {
+                Some(g) => { out.push(1); write_str(out, g); }
+                None => out.push(0),
+            }
+        }
+        out.push(if s.is_pub { 1 } else { 0 });
     }
     write_u32(out, m.functions.len() as u32);
     for f in &m.functions { write_bcfn(out, f); }
@@ -292,10 +304,24 @@ fn read_module(r: &mut Reader) -> Result<BcModule, Error> {
     for i in 0..n_structs {
         let name = read_str(r)?;
         let nf = r.read_u32()? as usize;
-        let mut fields = Vec::with_capacity(nf);
-        for _ in 0..nf { fields.push(read_str(r)?); }
+        let mut field_names = Vec::with_capacity(nf);
+        let mut field_types = Vec::with_capacity(nf);
+        let mut field_groups = Vec::with_capacity(nf);
+        for _ in 0..nf {
+            field_names.push(read_str(r)?);
+            field_types.push(read_type(r)?);
+            let has_group = r.read_u8()?;
+            field_groups.push(if has_group != 0 { Some(read_str(r)?) } else { None });
+        }
+        let is_pub = r.read_u8()? != 0;
         struct_index.insert(name.clone(), i);
-        struct_shapes.push(StructShape { name, field_names: fields });
+        struct_shapes.push(StructShape {
+            name,
+            field_names,
+            field_types,
+            field_groups,
+            is_pub,
+        });
     }
     let n_fns = r.read_u32()? as usize;
     let mut functions = Vec::with_capacity(n_fns);

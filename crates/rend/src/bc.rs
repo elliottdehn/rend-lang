@@ -58,12 +58,23 @@ pub struct PathSpec {
     pub is_blob: bool,
 }
 
-/// Bytecode-side description of a struct: the name and the ordered field names.
-/// Used by `MakeStruct` to attach names to values at construction.
+/// Bytecode-side description of a struct: the name plus its
+/// per-field type metadata. `MakeStruct` uses `field_names` to
+/// attach names to values at construction; the typed-resolution
+/// pass uses `field_types` + `field_groups` to inflate a `Type::
+/// Struct` reference into its full shape (needed when a tx
+/// compiled against a deployed dep references one of the dep's
+/// `pub` structs via `m::T`).
 #[derive(Debug, Clone)]
 pub struct StructShape {
     pub name: String,
     pub field_names: Vec<String>,
+    pub field_types: Vec<crate::ast::Type>,
+    pub field_groups: Vec<Option<String>>,
+    /// `pub struct Foo { ... }` was declared with the `pub`
+    /// modifier; the struct is referenceable from other modules
+    /// via `m::Foo`. Bare structs default to `false`.
+    pub is_pub: bool,
 }
 
 /// Bytecode-side description of an enum: the type name and ordered

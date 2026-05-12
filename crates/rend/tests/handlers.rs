@@ -258,6 +258,50 @@ fn non_pub_struct_cannot_be_referenced_cross_module() {
 }
 
 #[test]
+fn cross_module_handler_works_through_artifact_deps() {
+    // Deploy a `ledger` dep that exposes `pub struct Credited`,
+    // then compile a tx that handlers `ledger::Credited`. The
+    // compile_tx path must surface the dep's `pub` structs to
+    // typeck so `ledger::Credited` resolves at compile time.
+    let engine = Engine::new();
+    let mut kv = rend::kv::InMemoryKv::new();
+
+    // Step 1: compile + deploy the dep.
+    let ledger_src = "
+        module ledger;
+        pub struct Credited { user: i64, amount: i64 }
+        entry fn credit(user: i64, amount: i64) -> i64 {
+            emit Credited { user: user, amount: amount };
+            return 0;
+        }
+    ";
+    let ledger = engine.compile(ledger_src).unwrap();
+    let _ = engine.deploy(&ledger, Fuel::new(50_000), &kv).unwrap();
+
+    // Step 2: compile a tx against the deployed dep — cross-module
+    // handler typed through the artifact's published struct.
+    let tx_src = "
+        state total: i64;
+        on ledger::Credited fn track(c: ledger::Credited) {
+            total = total + c.amount;
+        }
+        fn main() -> i64 {
+            ledger::credit(1, 10);
+            ledger::credit(2, 25);
+            return total;
+        }
+    ";
+    let tx = engine.compile_tx(tx_src, &[ledger.clone()]).unwrap();
+
+    // Step 3: run the tx with the deployed dep.
+    let out = engine
+        .execute_tx(&tx, &[ledger], Fuel::new(50_000), &kv)
+        .unwrap();
+    kv.apply(&out.writes);
+    assert_eq!(out.result, Value::int(35i64));
+}
+
+#[test]
 fn cyclic_handler_chain_terminates_via_fuel() {
     // A → emit B → handler emits A → handler emits B → ...
     // The chain is unbounded; fuel exhaustion is the safety net.

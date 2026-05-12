@@ -77,17 +77,24 @@ pub fn compile_named_with_extras(
         struct_shapes.push(StructShape {
             name: s.name.clone(),
             field_names: s.fields.iter().map(|f| f.name.clone()).collect(),
+            field_types: s.fields.iter().map(|f| f.ty.clone()).collect(),
+            field_groups: s.fields.iter().map(|f| f.group.clone()).collect(),
+            is_pub: s.is_pub,
         });
         struct_index.insert(s.name.clone(), i);
     }
     // Caps share runtime + bytecode representation with structs.
     // Register them in the same shape table so MakeStruct / FieldGet
-    // / FieldSet handle caps without a separate instruction.
+    // / FieldSet handle caps without a separate instruction. Caps
+    // are never cross-module-importable, so `is_pub` stays false.
     for c in &module.caps {
         let i = struct_shapes.len();
         struct_shapes.push(StructShape {
             name: c.name.clone(),
             field_names: c.fields.iter().map(|f| f.name.clone()).collect(),
+            field_types: c.fields.iter().map(|f| f.ty.clone()).collect(),
+            field_groups: c.fields.iter().map(|f| f.group.clone()).collect(),
+            is_pub: false,
         });
         struct_index.insert(c.name.clone(), i);
     }

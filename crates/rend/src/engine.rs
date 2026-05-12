@@ -545,13 +545,39 @@ impl Engine {
                 }).collect(),
             ))
             .collect();
+        // Surface deps' `pub` struct decls so the tx source can
+        // reference them via `m::T`. Private structs in the dep
+        // aren't published — the resolver's visibility check is
+        // simply "absence from the cross-module catalog."
+        let dep_cross_structs: crate::typeck::CrossModuleStructs = deps
+            .iter()
+            .flat_map(|a| a.modules.iter())
+            .flat_map(|m| m.struct_shapes.iter().map(move |s| (m.name.clone(), s)))
+            .filter(|(_, s)| s.is_pub)
+            .map(|(mod_name, s)| {
+                let fields: Vec<(String, crate::ast::Type)> = s
+                    .field_names
+                    .iter()
+                    .zip(s.field_types.iter())
+                    .map(|(n, t)| (n.clone(), t.clone()))
+                    .collect();
+                (
+                    format!("{mod_name}::{}", s.name),
+                    (fields, s.field_groups.clone(), s.is_pub),
+                )
+            })
+            .collect();
         // Parse + resolve types.
         let mut module = {
             let tokens = crate::lexer::tokenize(src)?;
             let mut m = crate::parser::Parser::with_extra_iface_names(tokens, dep_iface_names.clone())
                 .parse_module()?;
             crate::modifier::expand(&mut m)?;
-            typeck::resolve_types_with_iface_externals(&mut m, &dep_iface_methods)?;
+            typeck::resolve_types_with_externals(
+                &mut m,
+                &dep_cross_structs,
+                &dep_iface_methods,
+            )?;
             m
         };
         // A tx is meaningless without a `main` — that's the
