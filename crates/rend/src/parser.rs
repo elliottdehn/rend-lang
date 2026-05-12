@@ -330,8 +330,54 @@ impl Parser {
         self.expect(Token::Struct, "expected 'struct'")?;
         let name = self.expect_ident()?;
         self.expect(Token::LBrace, "expected '{' after struct name")?;
+        let fields = self.parse_struct_body_fields("struct")?;
+        let close = self.cur_span();
+        self.expect(Token::RBrace, "expected '}'")?;
+        Ok(StructDecl { name, fields, span: Span { start, end: close.end } })
+    }
+
+    /// Parse the body of a `struct` or `cap` declaration: a sequence of
+    /// fields, where each entry is either a bare `name: T` field or a
+    /// `group <gname> { name: T, ... }` block whose inner fields all
+    /// share the group name. Used by both `parse_struct_decl` and
+    /// `parse_cap_decl` — the only difference between them is the
+    /// surrounding header / wrapping decl.
+    ///
+    /// `kind` ("struct" / "cap") is used purely for error messages so
+    /// the caller's surface syntax shows through.
+    fn parse_struct_body_fields(&mut self, kind: &str) -> Result<Vec<StructField>, Error> {
         let mut fields = Vec::new();
         while !self.peek_is(&Token::RBrace) {
+            if self.peek_is(&Token::Group) {
+                // `group <name> { f: T, ... }` — grouping block. The fields
+                // inside share one storage cell named `<gname>`. Trailing
+                // comma after the closing `}` is optional.
+                self.advance(); // consume `group`
+                let gname = self.expect_ident()?;
+                self.expect(Token::LBrace, "expected '{' after group name")?;
+                while !self.peek_is(&Token::RBrace) {
+                    let fstart = self.cur_span().start;
+                    let fname = self.expect_ident()?;
+                    self.expect(Token::Colon, "expected ':' after field name")?;
+                    let fty = self.parse_type()?;
+                    let fend = self.cur_span().start;
+                    fields.push(StructField {
+                        name: fname,
+                        ty: fty,
+                        group: Some(gname.clone()),
+                        span: Span { start: fstart, end: fend },
+                    });
+                    if !self.peek_is(&Token::RBrace) {
+                        self.expect(Token::Comma, "expected ',' between group fields")?;
+                    }
+                }
+                self.expect(Token::RBrace, "expected '}' to close group")?;
+                // Optional comma after the group block.
+                if self.peek_is(&Token::Comma) {
+                    self.advance();
+                }
+                continue;
+            }
             let fstart = self.cur_span().start;
             let fname = self.expect_ident()?;
             self.expect(Token::Colon, "expected ':' after field name")?;
@@ -340,15 +386,17 @@ impl Parser {
             fields.push(StructField {
                 name: fname,
                 ty: fty,
+                group: None,
                 span: Span { start: fstart, end: fend },
             });
             if !self.peek_is(&Token::RBrace) {
-                self.expect(Token::Comma, "expected ',' between struct fields")?;
+                self.expect(
+                    Token::Comma,
+                    &format!("expected ',' between {kind} fields"),
+                )?;
             }
         }
-        let close = self.cur_span();
-        self.expect(Token::RBrace, "expected '}'")?;
-        Ok(StructDecl { name, fields, span: Span { start, end: close.end } })
+        Ok(fields)
     }
 
     /// `interface Name { method-sig; ... }` — declares an abstract
@@ -437,22 +485,7 @@ impl Parser {
         self.expect(Token::Cap, "expected 'cap'")?;
         let name = self.expect_ident()?;
         self.expect(Token::LBrace, "expected '{' after cap name")?;
-        let mut fields = Vec::new();
-        while !self.peek_is(&Token::RBrace) {
-            let fstart = self.cur_span().start;
-            let fname = self.expect_ident()?;
-            self.expect(Token::Colon, "expected ':' after field name")?;
-            let fty = self.parse_type()?;
-            let fend = self.cur_span().start;
-            fields.push(StructField {
-                name: fname,
-                ty: fty,
-                span: Span { start: fstart, end: fend },
-            });
-            if !self.peek_is(&Token::RBrace) {
-                self.expect(Token::Comma, "expected ',' between cap fields")?;
-            }
-        }
+        let fields = self.parse_struct_body_fields("cap")?;
         let close = self.cur_span();
         self.expect(Token::RBrace, "expected '}'")?;
         Ok(CapDecl { name, fields, span: Span { start, end: close.end } })
@@ -622,7 +655,7 @@ impl Parser {
                     "json" => Ok(Type::Json),
                     name if self.struct_names.contains(name) => {
                         // unresolved struct ref — typeck inlines fields
-                        Ok(Type::Struct { name: name.to_string(), fields: Vec::new() })
+                        Ok(Type::Struct { name: name.to_string(), fields: Vec::new(), field_groups: Vec::new() })
                     }
                     name if self.enum_names.contains(name) => {
                         // unresolved enum ref — typeck inlines variants

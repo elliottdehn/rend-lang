@@ -407,15 +407,48 @@ impl<'a> Tx<'a> {
     pub fn write_typed(&mut self, key: u128, ty: &Type, value: Value) {
         let value = self.force(value);
         match (ty, value) {
-            (Type::Struct { fields: declared, .. }, Value::Struct { fields: actual, .. }) => {
-                for (fname, fty) in declared {
-                    let leaf = crate::hashing::child(key, fname.as_bytes());
-                    let v = actual
-                        .iter()
-                        .find(|(n, _)| n == fname)
-                        .map(|(_, v)| v.clone())
-                        .unwrap_or_else(|| Value::default_for(fty));
-                    self.write_typed(leaf, fty, v);
+            (
+                Type::Struct { name: parent_name, fields: declared, field_groups },
+                Value::Struct { fields: actual, .. },
+            ) => {
+                // Track which groups we've already emitted so each
+                // group cell is written exactly once even though
+                // multiple `declared` entries point at it.
+                let mut emitted_groups: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for (i, (fname, fty)) in declared.iter().enumerate() {
+                    let group = field_groups.get(i).and_then(|g| g.as_ref());
+                    match group {
+                        None => {
+                            let leaf = crate::hashing::child(key, fname.as_bytes());
+                            let v = actual
+                                .iter()
+                                .find(|(n, _)| n == fname)
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or_else(|| Value::default_for(fty));
+                            self.write_typed(leaf, fty, v);
+                        }
+                        Some(g) => {
+                            if !emitted_groups.insert(g.clone()) {
+                                continue;
+                            }
+                            let (_synth_ty, synth_val) = build_group_blob(
+                                parent_name,
+                                declared,
+                                field_groups,
+                                &actual,
+                                g,
+                            );
+                            // Group cell: write the synthetic struct
+                            // as a single blob. Going through `write`
+                            // (rather than `write_typed`) intentionally
+                            // skips the per-field split — the on-disk
+                            // shape is one cell with the group's
+                            // fields packed in declaration order.
+                            let leaf_key = crate::hashing::child(key, g.as_bytes());
+                            self.write(leaf_key, synth_val);
+                        }
+                    }
                 }
             }
             (_, v) => self.write(key, v),
@@ -674,6 +707,10 @@ enum TreeSpec {
     /// Index into the parallel `leaf_values` vec.
     Leaf(usize),
     Struct { name: String, fields: Vec<(String, TreeSpec)> },
+    /// Field that lives inside a grouped cell. `leaf_idx` points at
+    /// the group blob's slot in `leaf_values`; `field_name` is the
+    /// field to project out during reassembly.
+    Projection { leaf_idx: usize, field_name: String },
 }
 
 fn collect_leaves(
@@ -683,11 +720,62 @@ fn collect_leaves(
     types: &mut Vec<Type>,
 ) -> TreeSpec {
     match ty {
-        Type::Struct { name, fields } => {
+        Type::Struct { name, fields, field_groups } => {
             let mut field_specs = Vec::with_capacity(fields.len());
-            for (fname, fty) in fields {
-                let leaf_key = crate::hashing::child(key, fname.as_bytes());
-                field_specs.push((fname.clone(), collect_leaves(leaf_key, fty, keys, types)));
+            // Each unique group name → leaf_idx of its synthetic blob.
+            // Populated lazily on first sight; subsequent siblings in
+            // the same group reuse the registered leaf.
+            let mut group_leaf: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (i, (fname, fty)) in fields.iter().enumerate() {
+                let group = field_groups.get(i).and_then(|g| g.as_ref());
+                match group {
+                    None => {
+                        let leaf_key = crate::hashing::child(key, fname.as_bytes());
+                        field_specs.push((
+                            fname.clone(),
+                            collect_leaves(leaf_key, fty, keys, types),
+                        ));
+                    }
+                    Some(g) => {
+                        let leaf_idx = if let Some(&idx) = group_leaf.get(g) {
+                            idx
+                        } else {
+                            // Synthetic struct type for the group cell:
+                            // a flat struct holding the group's fields
+                            // in declaration order. `field_groups` is
+                            // empty so the serializer treats it as one
+                            // blob (no nested splitting).
+                            let group_fields: Vec<(String, Type)> = fields
+                                .iter()
+                                .enumerate()
+                                .filter(|(j, _)| {
+                                    field_groups.get(*j).and_then(|g2| g2.as_ref())
+                                        == Some(g)
+                                })
+                                .map(|(_, (fn_, ft))| (fn_.clone(), ft.clone()))
+                                .collect();
+                            let synthetic_ty = Type::Struct {
+                                name: synthetic_group_name(name, g),
+                                fields: group_fields,
+                                field_groups: Vec::new(),
+                            };
+                            let leaf_key = crate::hashing::child(key, g.as_bytes());
+                            let idx = keys.len();
+                            keys.push(leaf_key);
+                            types.push(synthetic_ty);
+                            group_leaf.insert(g.clone(), idx);
+                            idx
+                        };
+                        field_specs.push((
+                            fname.clone(),
+                            TreeSpec::Projection {
+                                leaf_idx,
+                                field_name: fname.clone(),
+                            },
+                        ));
+                    }
+                }
             }
             TreeSpec::Struct { name: name.clone(), fields: field_specs }
         }
@@ -710,5 +798,66 @@ fn reassemble(spec: &TreeSpec, leaves: &[Option<Value>]) -> Value {
                 .map(|(n, sub)| (n.clone(), reassemble(sub, leaves)))
                 .collect(),
         },
+        TreeSpec::Projection { leaf_idx, field_name } => {
+            let leaf = leaves[*leaf_idx].as_ref().expect("group leaf resolved");
+            match leaf {
+                Value::Struct { fields, .. } => fields
+                    .iter()
+                    .find(|(n, _)| n == field_name)
+                    .map(|(_, v)| v.clone())
+                    .expect("group struct missing projected field"),
+                other => panic!("group leaf is not a struct value: {other}"),
+            }
+        }
     }
+}
+
+/// Synthetic name for a group's blob cell. Used as the
+/// `Type::Struct.name` of the on-disk synthetic struct so the
+/// runtime can tell a group blob apart from a real struct in
+/// debug output. Format is `{parent}::group::{group}`.
+pub(crate) fn synthetic_group_name(parent: &str, group: &str) -> String {
+    format!("{parent}::group::{group}")
+}
+
+/// Build the (synthetic_struct_type, synthetic_struct_value) pair
+/// for a single group inside a parent struct. Used by both the
+/// runtime write path and the compile path to keep the on-disk
+/// shape in lockstep. Returns `None` if `actual` has no values for
+/// the group's fields (caller should treat as "no write needed",
+/// though today every code path that calls this has all values).
+pub(crate) fn build_group_blob(
+    parent_name: &str,
+    declared: &[(String, Type)],
+    field_groups: &[Option<String>],
+    actual: &[(String, Value)],
+    group: &str,
+) -> (Type, Value) {
+    let group_fields: Vec<(String, Type)> = declared
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| field_groups.get(*j).and_then(|g| g.as_ref()) == Some(&group.to_string()))
+        .map(|(_, (fn_, ft))| (fn_.clone(), ft.clone()))
+        .collect();
+    let synthetic_ty = Type::Struct {
+        name: synthetic_group_name(parent_name, group),
+        fields: group_fields.clone(),
+        field_groups: Vec::new(),
+    };
+    let value_fields: Vec<(String, Value)> = group_fields
+        .iter()
+        .map(|(fn_, ft)| {
+            let v = actual
+                .iter()
+                .find(|(n, _)| n == fn_)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| Value::default_for(ft));
+            (fn_.clone(), v)
+        })
+        .collect();
+    let synth_val = Value::Struct {
+        name: synthetic_group_name(parent_name, group),
+        fields: value_fields,
+    };
+    (synthetic_ty, synth_val)
 }

@@ -28,6 +28,12 @@ pub enum Token {
     State,
     Entry,
     Struct,
+    /// `group <name> { fields }` — inside a struct body, declares
+    /// that the listed fields share a single storage cell named
+    /// `<name>`. Groups control storage granularity: ungrouped
+    /// fields get their own cells, grouped fields are read/written
+    /// together as a blob.
+    Group,
     Module,
     Event,
     Emit,

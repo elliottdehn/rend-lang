@@ -197,7 +197,7 @@ impl Value {
             Type::Address => Value::Address(String::new()),
             Type::Bytes => Value::Bytes(Vec::new()),
             Type::Array(_) => Value::Array(Vec::new()),
-            Type::Struct { name, fields } => Value::Struct {
+            Type::Struct { name, fields, field_groups: _ } => Value::Struct {
                 name: name.clone(),
                 fields: fields
                     .iter()

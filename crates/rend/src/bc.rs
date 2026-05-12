@@ -53,10 +53,17 @@ pub struct EventShape {
 /// state's struct type, derives the leaf KV key by chaining
 /// `child(parent_key, field_name)` for each step, and stores the leaf type
 /// for granular reads/writes.
+///
+/// When `is_blob` is set, the leaf is a *group cell* — a synthetic
+/// struct stored as a single KV value. Reads must use `read_cell`
+/// rather than `read_typed`, because the latter would recursively
+/// split the synthetic struct into per-field leaves that don't
+/// exist on disk.
 #[derive(Debug, Clone)]
 pub struct PathSpec {
     pub leaf_key: u128,
     pub leaf_type: Type,
+    pub is_blob: bool,
 }
 
 /// Bytecode-side description of a struct: the name and the ordered field names.

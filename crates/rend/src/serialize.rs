@@ -335,7 +335,7 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
             }
             Some(Value::Array(out))
         }
-        (TAG_STRUCT, Type::Struct { name, fields })
+        (TAG_STRUCT, Type::Struct { name, fields, field_groups: _ })
         | (TAG_STRUCT, Type::Cap { name, fields, .. }) => {
             // Caps share the struct on-disk format. The Type tells the
             // deserializer which field layout to use; the Value coming

@@ -82,8 +82,12 @@ const VERSION_MAJOR: u8 = 0;
 ///         cleanup ops (RemoveUnique / RemoveFromList for both
 ///         backends). pbtree gained a B+-tree-style remove with
 ///         tombstone propagation.
+///   0.14 → Type::Struct carries `field_groups` — a parallel array
+///         of `Option<String>` group names that controls storage
+///         granularity. Ungrouped fields each get their own cell;
+///         grouped fields share a cell named after the group.
 /// Older readers can't decode newer formats.
-const VERSION_MINOR: u8 = 13;
+const VERSION_MINOR: u8 = 14;
 
 /// A compiled artifact: bytes + content hash + the materialized
 /// `BcModule`s. Either `bytes` or `modules` is canonical depending
@@ -208,6 +212,7 @@ fn write_module(out: &mut Vec<u8>, m: &BcModule) {
     for p in &m.path_specs {
         write_u128(out, p.leaf_key);
         write_type(out, &p.leaf_type);
+        out.push(if p.is_blob { 1 } else { 0 });
     }
     write_u32(out, m.events.len() as u32);
     for e in &m.events {
@@ -297,6 +302,7 @@ fn read_module(r: &mut Reader) -> Result<BcModule, Error> {
         path_specs.push(PathSpec {
             leaf_key: r.read_u128()?,
             leaf_type: read_type(r)?,
+            is_blob: r.read_u8()? != 0,
         });
     }
     let n_events = r.read_u32()? as usize;
@@ -588,13 +594,21 @@ fn write_type(out: &mut Vec<u8>, ty: &Type) {
         Type::PVec { elem } => {
             out.push(ty_tag::PVEC); write_type(out, elem);
         }
-        Type::Struct { name, fields } => {
+        Type::Struct { name, fields, field_groups } => {
             out.push(ty_tag::STRUCT);
             write_str(out, name);
             write_u32(out, fields.len() as u32);
-            for (n, t) in fields {
+            // Per-field: (name, type, group?) where group is encoded
+            // as a 1-byte presence flag followed by the group name
+            // when present. `field_groups` may be empty (uniform
+            // ungrouped); treat that as all-`None`.
+            for (i, (n, t)) in fields.iter().enumerate() {
                 write_str(out, n);
                 write_type(out, t);
+                match field_groups.get(i).and_then(|g| g.as_ref()) {
+                    Some(g) => { out.push(1); write_str(out, g); }
+                    None => out.push(0),
+                }
             }
         }
         Type::Tuple(elems) => {
@@ -666,12 +680,24 @@ fn read_type(r: &mut Reader) -> Result<Type, Error> {
             let name = read_str(r)?;
             let n = r.read_u32()? as usize;
             let mut fields = Vec::with_capacity(n);
+            let mut groups = Vec::with_capacity(n);
             for _ in 0..n {
                 let fname = read_str(r)?;
                 let fty = read_type(r)?;
+                let has_group = r.read_u8()?;
+                let group = if has_group != 0 { Some(read_str(r)?) } else { None };
                 fields.push((fname, fty));
+                groups.push(group);
             }
-            Type::Struct { name, fields }
+            // Normalize all-`None` to empty to match the parser's
+            // default for ungrouped structs (keeps Eq stable across
+            // round-trips).
+            let field_groups = if groups.iter().all(Option::is_none) {
+                Vec::new()
+            } else {
+                groups
+            };
+            Type::Struct { name, fields, field_groups }
         }
         ty_tag::TUPLE => {
             let n = r.read_u32()? as usize;

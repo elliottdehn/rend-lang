@@ -645,7 +645,15 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 }
                 Instr::KvGetPath { dst, path_idx } => {
                     let spec = &module.path_specs[path_idx as usize];
-                    regs[dst as usize] = self.tx.read_typed(spec.leaf_key, &spec.leaf_type);
+                    // Group-cell leaves are stored as one blob; reading
+                    // them through `read_typed` would recursively split
+                    // the synthetic struct into per-field leaves that
+                    // were never written. `read_cell` keeps it whole.
+                    regs[dst as usize] = if spec.is_blob {
+                        self.tx.read_cell(spec.leaf_key, &spec.leaf_type)
+                    } else {
+                        self.tx.read_typed(spec.leaf_key, &spec.leaf_type)
+                    };
                 }
                 Instr::PrefetchMap { arr_reg, state_idx } => {
                     // Need concrete keys to compute cell addresses, so
@@ -820,7 +828,15 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 }
                 Instr::KvPutPath { src, path_idx } => {
                     let spec = &module.path_specs[path_idx as usize];
-                    self.tx.write_typed(spec.leaf_key, &spec.leaf_type, regs[src as usize].clone());
+                    // Group-cell leaves are written as one blob; using
+                    // `write_typed` would split the synthetic struct
+                    // into per-field cells and re-introduce the
+                    // granular layout we're trying to coalesce.
+                    if spec.is_blob {
+                        self.tx.write(spec.leaf_key, regs[src as usize].clone());
+                    } else {
+                        self.tx.write_typed(spec.leaf_key, &spec.leaf_type, regs[src as usize].clone());
+                    }
                 }
                 Instr::MapGet { dst, state_idx, key_reg } => {
                     let root = module.state_roots[state_idx as usize];

@@ -175,6 +175,11 @@ pub struct CapDecl {
 pub struct StructField {
     pub name: String,
     pub ty: Type,
+    /// `Some(group_name)` if this field was declared inside a
+    /// `group <name> { ... }` block — sibling fields with the same
+    /// group share one storage cell. `None` means the field has its
+    /// own cell (default granular layout).
+    pub group: Option<String>,
     pub span: Span,
 }
 
@@ -306,7 +311,17 @@ pub enum Type {
     Json,
     /// Named struct. Field types are inlined for self-contained Type values
     /// — typeck normalizes named references to fully-resolved types.
-    Struct { name: String, fields: Vec<(String, Type)> },
+    Struct {
+        name: String,
+        fields: Vec<(String, Type)>,
+        /// Parallel to `fields`: `field_groups[i]` is `Some(group_name)` if
+        /// `fields[i]` belongs to a `group <name> { ... }` declaration and
+        /// shares a cell with sibling fields under the same name. `None`
+        /// means the field is granular (own cell). Empty `field_groups` is
+        /// treated as all-`None` (uniform granular layout) so existing
+        /// constructors that ignore groups continue to work.
+        field_groups: Vec<Option<String>>,
+    },
     /// Anonymous fixed-arity tuple. Local-only (not storable, not
     /// usable as a map key today). Used mostly for multi-value
     /// returns and destructuring `let`.

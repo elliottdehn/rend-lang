@@ -10,6 +10,25 @@ use crate::ast::*;
 use crate::error::{Error, ErrorKind};
 use crate::token::Span;
 
+/// Resolved struct info threaded through type resolution: parallel
+/// arrays of `(field_name, field_type)` and per-field group names
+/// (`None` = ungrouped granular cell, `Some(g)` = shares cell with
+/// siblings under group `g`). Used to materialize `Type::Struct`
+/// values when a struct name is encountered in any type position.
+type StructInfo = (Vec<(String, Type)>, Vec<Option<String>>);
+
+/// Canonical form: when every field is ungrouped, store the empty
+/// vec rather than `[None, None, ...]`. Keeps `PartialEq` on
+/// `Type::Struct` stable between the parse-time default and the
+/// typeck-resolved form.
+fn normalize_groups(groups: Vec<Option<String>>) -> Vec<Option<String>> {
+    if groups.iter().all(Option::is_none) {
+        Vec::new()
+    } else {
+        groups
+    }
+}
+
 /// Walk the module and replace every unresolved `Type::Struct { name, fields: [] }`
 /// with a fully-populated `Type::Struct { name, fields: ... }` taken from the
 /// matching declaration. Struct decls are processed in declaration order,
@@ -28,12 +47,14 @@ pub fn resolve_types_with_iface_externals(
 ) -> Result<(), Error> {
     use std::collections::HashMap;
     let owner_module = module.name.clone().unwrap_or_else(|| "main".to_string());
-    let mut struct_map: HashMap<String, Vec<(String, Type)>> = HashMap::new();
+    let mut struct_map: HashMap<String, StructInfo> = HashMap::new();
     for decl in module.structs.iter_mut() {
         let mut resolved = Vec::with_capacity(decl.fields.len());
+        let mut groups = Vec::with_capacity(decl.fields.len());
         for f in &mut decl.fields {
             f.ty = resolve_one(&f.ty, &struct_map, decl.span)?;
             resolved.push((f.name.clone(), f.ty.clone()));
+            groups.push(f.group.clone());
         }
         if struct_map.contains_key(&decl.name) {
             return Err(Error::new(
@@ -42,7 +63,7 @@ pub fn resolve_types_with_iface_externals(
                 decl.span,
             ));
         }
-        struct_map.insert(decl.name.clone(), resolved);
+        struct_map.insert(decl.name.clone(), (resolved, normalize_groups(groups)));
     }
     // Resolve enum payload types — they may reference structs that
     // were resolved above.
@@ -126,11 +147,13 @@ pub fn resolve_types_with_iface_externals(
     // enum or a cap.
     for decl in module.structs.iter_mut() {
         let mut updated = Vec::with_capacity(decl.fields.len());
+        let mut groups = Vec::with_capacity(decl.fields.len());
         for f in &mut decl.fields {
             f.ty = resolve_one_with_enums(&f.ty, &struct_map, &enum_map, &cap_map, &iface_map, decl.span)?;
             updated.push((f.name.clone(), f.ty.clone()));
+            groups.push(f.group.clone());
         }
-        struct_map.insert(decl.name.clone(), updated);
+        struct_map.insert(decl.name.clone(), (updated, normalize_groups(groups)));
     }
     for s in module.states.iter_mut() {
         s.ty = resolve_one_with_enums(&s.ty, &struct_map, &enum_map, &cap_map, &iface_map, s.span)?;
@@ -161,7 +184,7 @@ pub fn resolve_types_with_iface_externals(
 
 fn resolve_one_with_enums(
     ty: &Type,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, Vec<(String, Vec<Type>)>>,
     caps: &HashMap<String, (Vec<(String, Type)>, String)>,
     ifaces: &HashMap<String, Vec<crate::ast::InterfaceMethodSig>>,
@@ -188,7 +211,7 @@ fn resolve_one_with_enums(
         // Cap names arrive from the parser as `Type::Struct { name, fields: [] }`
         // because cap names share the struct first-pass set. Resolve them
         // to `Type::Cap` *before* the struct fallback.
-        Type::Struct { name, fields } if fields.is_empty() && caps.contains_key(name) => {
+        Type::Struct { name, fields, field_groups: _ } if fields.is_empty() && caps.contains_key(name) => {
             let (cap_fields, owner) = &caps[name];
             Ok(Type::Cap {
                 name: name.clone(),
@@ -225,7 +248,7 @@ fn resolve_one_with_enums(
 
 fn resolve_block_with_enums(
     block: &mut Block,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, Vec<(String, Vec<Type>)>>,
     caps: &HashMap<String, (Vec<(String, Type)>, String)>,
     ifaces: &HashMap<String, Vec<crate::ast::InterfaceMethodSig>>,
@@ -238,7 +261,7 @@ fn resolve_block_with_enums(
 
 fn resolve_stmt_with_enums(
     stmt: &mut Stmt,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, Vec<(String, Vec<Type>)>>,
     caps: &HashMap<String, (Vec<(String, Type)>, String)>,
     ifaces: &HashMap<String, Vec<crate::ast::InterfaceMethodSig>>,
@@ -258,7 +281,7 @@ fn resolve_stmt_with_enums(
 
 fn resolve_if_with_enums(
     ifs: &mut IfStmt,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, Vec<(String, Vec<Type>)>>,
     caps: &HashMap<String, (Vec<(String, Type)>, String)>,
     ifaces: &HashMap<String, Vec<crate::ast::InterfaceMethodSig>>,
@@ -278,19 +301,23 @@ fn resolve_if_with_enums(
 
 fn resolve_one(
     ty: &Type,
-    structs: &std::collections::HashMap<String, Vec<(String, Type)>>,
+    structs: &std::collections::HashMap<String, StructInfo>,
     span: crate::token::Span,
 ) -> Result<Type, Error> {
     match ty {
-        Type::Struct { name, fields } if fields.is_empty() => {
-            let fields = structs.get(name).ok_or_else(|| {
+        Type::Struct { name, fields, field_groups: _ } if fields.is_empty() => {
+            let (fields, groups) = structs.get(name).ok_or_else(|| {
                 Error::new(
                     ErrorKind::Type,
                     format!("unknown struct '{name}'"),
                     span,
                 )
             })?;
-            Ok(Type::Struct { name: name.clone(), fields: fields.clone() })
+            Ok(Type::Struct {
+                name: name.clone(),
+                fields: fields.clone(),
+                field_groups: groups.clone(),
+            })
         }
         Type::Struct { .. } => Ok(ty.clone()),
         Type::Array(elem) => Ok(Type::Array(Box::new(resolve_one(elem, structs, span)?))),
@@ -677,6 +704,12 @@ struct TypeChecker {
     module_fn_entry: HashMap<String, bool>,
     states: HashMap<String, Type>,
     structs: HashMap<String, Vec<(String, Type)>>,
+    /// Parallel to `structs`: per-field group annotations
+    /// (`None` = own cell, `Some(g)` = shared cell). Populated from
+    /// `StructDecl.fields[i].group`. Used when materializing a
+    /// `Type::Struct` value from a literal so the type matches the
+    /// declaration's storage shape and `==` succeeds on assignment.
+    struct_groups: HashMap<String, Vec<Option<String>>>,
     /// Event name → declared parameter types in order. Emits validate
     /// against this map; events are module-private (no cross-module
     /// emit syntax).
@@ -775,11 +808,15 @@ fn check_inner(
     for (k, v) in builtin_sigs() { sigs.entry(k).or_insert(v); }
 
     let mut structs: HashMap<String, Vec<(String, Type)>> = HashMap::new();
+    let mut struct_groups: HashMap<String, Vec<Option<String>>> = HashMap::new();
     for s in &module.structs {
         structs.insert(
             s.name.clone(),
             s.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
         );
+        let groups: Vec<Option<String>> =
+            s.fields.iter().map(|f| f.group.clone()).collect();
+        struct_groups.insert(s.name.clone(), normalize_groups(groups));
     }
 
     let mut states: HashMap<String, Type> = HashMap::new();
@@ -1038,6 +1075,7 @@ fn check_inner(
         module_fn_entry,
         states,
         structs,
+        struct_groups,
         events,
         enums,
         consts,
@@ -2162,7 +2200,16 @@ impl TypeChecker {
                         owner_module: self.current_module.clone(),
                     })
                 } else {
-                    Ok(Type::Struct { name: name.clone(), fields: decl })
+                    // Carry the declaration's group annotations so a
+                    // freshly-constructed literal's type equals the
+                    // declared `Type::Struct` (assignment to state
+                    // checks `==`, including `field_groups`).
+                    let field_groups = self
+                        .struct_groups
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default();
+                    Ok(Type::Struct { name: name.clone(), fields: decl, field_groups })
                 }
             }
             ExprKind::Field { target, name } => {

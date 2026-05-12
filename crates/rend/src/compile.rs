@@ -396,13 +396,69 @@ impl<'a> FnCompiler<'a> {
     /// key by chaining `child(parent_key, field_name)` and the leaf type by
     /// walking the state's struct shape. Caller must ensure the path is
     /// valid (typeck guarantees this for paths produced from typed code).
-    fn intern_path(&mut self, state_idx: u16, path: Vec<String>) -> u16 {
-        if let Some(&idx) = self.path_index.get(&(state_idx, path.clone())) {
-            return idx;
-        }
+    ///
+    /// Returns `(path_idx, projection)`. When `projection` is
+    /// `Some(field_name)`, the path stops at a *group cell* (a blob
+    /// holding several sibling fields) and the caller must follow the
+    /// `KvGetPath` / `KvPutPath` with a `FieldGet` / `FieldSet` on
+    /// `field_name` to actually touch the requested field. When
+    /// `projection` is `None`, the path bottoms at the field's own
+    /// granular cell and no follow-up projection is needed.
+    fn intern_path(
+        &mut self,
+        state_idx: u16,
+        path: Vec<String>,
+    ) -> (u16, Vec<String>) {
+        // Walk the path once to discover whether it bottoms at the
+        // field's own granular cell or at a group cell (with a
+        // follow-up projection chain). We don't cache the chain
+        // separately because it's a pure function of (state, path).
         let mut key = self.state_roots[state_idx as usize];
         let mut ty = self.state_types[state_idx as usize].clone();
+        let mut chain: Vec<String> = Vec::new();
+        let mut pivoted = false;
         for name in &path {
+            if pivoted {
+                // Already inside a group blob: every remaining path
+                // component is just a field projection on the loaded
+                // struct. Inner `group` annotations on types nested
+                // inside the outer group are intentionally inert —
+                // a group is the unit of storage, so once a parent
+                // cell is monolithic, no descendant gets its own
+                // cell back. Pile the name onto the chain and move on.
+                chain.push(name.clone());
+                continue;
+            }
+            if let Type::Struct { fields, field_groups, .. } = &ty {
+                let pos = fields.iter().position(|(n, _)| n == name);
+                let in_group = pos
+                    .and_then(|i| field_groups.get(i).and_then(|g| g.as_ref()))
+                    .cloned();
+                if let Some(g) = in_group {
+                    let group_fields: Vec<(String, Type)> = fields
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| {
+                            field_groups.get(*j).and_then(|g2| g2.as_ref())
+                                == Some(&g)
+                        })
+                        .map(|(_, (fn_, ft))| (fn_.clone(), ft.clone()))
+                        .collect();
+                    let parent_name = match &ty {
+                        Type::Struct { name, .. } => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    key = crate::hashing::child(key, g.as_bytes());
+                    ty = Type::Struct {
+                        name: crate::tx::synthetic_group_name(&parent_name, &g),
+                        fields: group_fields,
+                        field_groups: Vec::new(),
+                    };
+                    chain.push(name.clone());
+                    pivoted = true;
+                    continue;
+                }
+            }
             key = crate::hashing::child(key, name.as_bytes());
             ty = match ty {
                 Type::Struct { fields, .. } => fields
@@ -413,10 +469,17 @@ impl<'a> FnCompiler<'a> {
                 _ => panic!("state field path on non-struct type"),
             };
         }
+        // Cache PathSpecs by `(state_idx, requested_path)` — even
+        // when two paths bottom at the same group cell, their
+        // requested-field names differ, so the keys stay distinct.
+        if let Some(&idx) = self.path_index.get(&(state_idx, path.clone())) {
+            return (idx, chain);
+        }
         let idx = self.path_specs.len() as u16;
-        self.path_specs.push(PathSpec { leaf_key: key, leaf_type: ty });
+        let is_blob = !chain.is_empty();
+        self.path_specs.push(PathSpec { leaf_key: key, leaf_type: ty, is_blob });
         self.path_index.insert((state_idx, path), idx);
-        idx
+        (idx, chain)
     }
 
     fn lookup_local(&self, name: &str) -> Option<u16> {
@@ -779,8 +842,51 @@ impl<'a> FnCompiler<'a> {
                 // granular cell write at the leaf, never read+rebuild the
                 // parent struct.
                 if let Some((state_idx, path)) = self.try_state_field_path(target) {
-                    let path_idx = self.intern_path(state_idx, path);
-                    self.code.push(Instr::KvPutPath { src: value_reg, path_idx });
+                    let (path_idx, chain) = self.intern_path(state_idx, path);
+                    if chain.is_empty() {
+                        self.code.push(Instr::KvPutPath { src: value_reg, path_idx });
+                    } else {
+                        // Grouped write: nested read-modify-write
+                        // through the projection chain. Allocate one
+                        // temp per level so we can FieldSet back up
+                        // the parent chain after touching the leaf,
+                        // then store the rebuilt blob.
+                        let mut tmps: Vec<u16> = Vec::with_capacity(chain.len());
+                        for _ in 0..chain.len() {
+                            tmps.push(self.alloc());
+                        }
+                        // tmps[0] = group blob, tmps[i] = blob.chain[0]....chain[i-1].
+                        self.code.push(Instr::KvGetPath { dst: tmps[0], path_idx });
+                        for i in 1..chain.len() {
+                            let name_idx = self.const_idx(Const::Str(chain[i - 1].clone()));
+                            self.code.push(Instr::FieldGet {
+                                dst: tmps[i],
+                                src: tmps[i - 1],
+                                name_idx,
+                            });
+                        }
+                        // Leaf set: tmps[last].<chain.last()> = value_reg.
+                        let last = chain.len() - 1;
+                        let leaf_name = self.const_idx(Const::Str(chain[last].clone()));
+                        self.code.push(Instr::FieldSet {
+                            dst: tmps[last],
+                            name_idx: leaf_name,
+                            val: value_reg,
+                        });
+                        // Walk back up: parent.<chain[i-1]> = child.
+                        for i in (1..chain.len()).rev() {
+                            let name_idx = self.const_idx(Const::Str(chain[i - 1].clone()));
+                            self.code.push(Instr::FieldSet {
+                                dst: tmps[i - 1],
+                                name_idx,
+                                val: tmps[i],
+                            });
+                        }
+                        self.code.push(Instr::KvPutPath { src: tmps[0], path_idx });
+                        for t in tmps.into_iter().rev() {
+                            self.free(t);
+                        }
+                    }
                     return Ok(());
                 }
                 let tmp = self.alloc();
@@ -1871,8 +1977,24 @@ impl<'a> FnCompiler<'a> {
             }
             ExprKind::Field { target, name } => {
                 if let Some((state_idx, path)) = self.try_state_field_path(expr) {
-                    let path_idx = self.intern_path(state_idx, path);
-                    self.code.push(Instr::KvGetPath { dst, path_idx });
+                    let (path_idx, chain) = self.intern_path(state_idx, path);
+                    if chain.is_empty() {
+                        self.code.push(Instr::KvGetPath { dst, path_idx });
+                    } else {
+                        // Grouped path: load the group blob into a
+                        // temp, then walk `chain` of FieldGets. Inner
+                        // hops reuse the same temp register (FieldGet
+                        // allows dst == src — vm clones at read), and
+                        // the final hop writes into `dst`.
+                        let tmp = self.alloc();
+                        self.code.push(Instr::KvGetPath { dst: tmp, path_idx });
+                        for (i, fname) in chain.iter().enumerate() {
+                            let name_idx = self.const_idx(Const::Str(fname.clone()));
+                            let into = if i + 1 == chain.len() { dst } else { tmp };
+                            self.code.push(Instr::FieldGet { dst: into, src: tmp, name_idx });
+                        }
+                        self.free(tmp);
+                    }
                     return Ok(());
                 }
                 let src = self.alloc();

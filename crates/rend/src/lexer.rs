@@ -317,6 +317,7 @@ impl<'a> Lexer<'a> {
             "state" => Token::State,
             "entry" => Token::Entry,
             "struct" => Token::Struct,
+            "group" => Token::Group,
             "module" => Token::Module,
             "event" => Token::Event,
             "emit" => Token::Emit,
