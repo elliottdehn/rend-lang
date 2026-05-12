@@ -174,28 +174,42 @@
 
 <section>
   <h2>What it feels like</h2>
-  <p class="subtitle">Reserve a batch of ids atomically, then process them in parallel. <code>continue</code> skips an output slot; state writes inside the body merge into the parent transaction with conflict re-run.</p>
-<pre><code><span class="k">module</span> claims;
+  <p class="subtitle"><code>main</code> is the per-request transaction kernel. A JIT-codegen layer synthesizes its body from the incoming payload — each input string is embedded as an <em>explicit literal</em> so the parser refuses any code-shaped fragment. One atomic <code>reserve</code> bumps the id counter; a <code>parallel</code> block fans out the interns into shadow transactions that touch disjoint pmap cells.</p>
+<pre><code><span class="k">module</span> strdedup;
 
-<span class="k">state</span> next_id:    <span class="t">u64</span>;
-<span class="k">state</span> claims:     <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">u64</span>&gt;;   <span class="c">// id → owner (0 = unclaimed)</span>
+<span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, <span class="t">u64</span>&gt;;   <span class="c">// content → id (HAMT-disjoint per key)</span>
+<span class="k">state</span> reverse: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;   <span class="c">// id → content</span>
+<span class="k">state</span> next_id: <span class="t">u64</span>;                 <span class="c">// sole intentionally-contended cell</span>
 
-<span class="k">entry fn</span> claim_batch(caller: <span class="k">`</span><span class="t">u64</span><span class="k">`</span>) -&gt; <span class="t">u64</span> {
-    <span class="k">let</span> ids = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
-    <span class="k">let</span> out = <span class="k">arr</span>&lt;<span class="t">u64</span>&gt;[<span class="n">4u64</span>];
+<span class="c">// One read on a dedup hit; two writes + counter bump on a miss.</span>
+<span class="k">fn</span> intern_at(s: <span class="t">string</span>, slot: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+    <span class="k">let</span> existing = forward[s];
+    <span class="k">if</span> existing &gt; <span class="n">0u64</span> { <span class="k">return</span> existing; }
+    forward[s] = slot;
+    reverse[slot] = s;
+    <span class="k">return</span> slot;
+}
 
-    <span class="k">parallel for</span> id <span class="k">in</span> ids <span class="k">to</span> out {
-        <span class="k">if</span> claims[id] &gt; <span class="n">0u64</span> { <span class="k">continue</span>; }
-        claims[id] = caller;
-        id
+<span class="c">// The transaction. `reserve` is one atomic counter bump; the four</span>
+<span class="c">// parallel legs run in their own shadow Txs and hit disjoint cells.</span>
+<span class="c">// If two legs interned the same string, the merge re-runs the loser</span>
+<span class="c">// against the winner's write — it observes the existing id and</span>
+<span class="c">// returns it. No retry loops, no per-call subtransaction tax.</span>
+<span class="k">fn</span> main() -&gt; <span class="t">u64</span> {
+    <span class="k">let</span> slots = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
+
+    <span class="k">parallel</span> {
+        <span class="k">let</span> id_a = intern_at(<span class="k">`</span><span class="s">"alpha"</span><span class="k">`</span>, slots[<span class="n">0i64</span>]);
+        <span class="k">let</span> id_b = intern_at(<span class="k">`</span><span class="s">"beta"</span><span class="k">`</span>,  slots[<span class="n">1i64</span>]);
+        <span class="k">let</span> id_c = intern_at(<span class="k">`</span><span class="s">"gamma"</span><span class="k">`</span>, slots[<span class="n">2i64</span>]);
+        <span class="k">let</span> id_d = intern_at(<span class="k">`</span><span class="s">"delta"</span><span class="k">`</span>, slots[<span class="n">3i64</span>]);
     }
 
-    <span class="c">// `caller` is sticky-typed `u64` — the parser refuses any</span>
-    <span class="c">// call site that passes a computed value. No injection-class</span>
-    <span class="c">// risk at the codegen boundary; the safety is structural.</span>
-    <span class="k">return</span> next_id;
+    <span class="c">// Canonical ids — `id_a` is "alpha" regardless of which leg won.</span>
+    <span class="k">return</span> id_a + id_b + id_c + id_d;
 }
 </code></pre>
+  <p class="subtle" style="margin-top: 20px;">The same algorithm in SQL is a CTE wrapping <code>INSERT&nbsp;...&nbsp;ON&nbsp;CONFLICT&nbsp;DO&nbsp;NOTHING&nbsp;RETURNING&nbsp;id</code> with a <code>UNION&nbsp;ALL&nbsp;SELECT</code> fallback — one statement doing two unrelated jobs because the language can't say either of them directly — plus a stored procedure to make it composable, plus exception handling that allocates a subtransaction per call, plus a retry loop in the application. Stored procedures of this shape are how every non-trivial Supabase project ends up with a <code>database/functions/*.sql</code> directory nobody loves.</p>
 </section>
 
 <section>
