@@ -56,13 +56,19 @@ fn example_44_event_handlers_fires_each_handler_on_every_emit() {
 }
 
 #[test]
-fn example_46_parallel_portfolio_runs_reads_concurrently() {
-    // Three parallel pmap reads + parallel pmap writes. Expected
-    // USD-equivalent total:
-    //   1000 × 1.00 + 500 × 1.08 + 100000 × 0.01 = 1000 + 540 + 1000 = 2540.
-    let src = std::fs::read_to_string("examples/46_parallel_portfolio.rd").unwrap();
+fn example_46_parallel_bulk_credit_runs_disjoint_rmw_concurrently() {
+    // Two batch credits, each doing three R→W ops on disjoint
+    // balance cells inside a `parallel` block. The reads issue
+    // concurrently (instead of serializing behind the writes
+    // that would otherwise fence them) and the disjoint writes
+    // merge without re-run. Final balances:
+    //   alice: 1000 + 100 + 200 = 1300
+    //   bob:    500 +  50 +  75 =  625
+    //   carol:  250 +  25 +  30 =  305
+    //   sum                     = 2230
+    let src = std::fs::read_to_string("examples/46_parallel_bulk_credit.rd").unwrap();
     let out = rend::run(&src).unwrap();
-    assert_eq!(out, Value::U64(2540));
+    assert_eq!(out, Value::U64(2230));
 }
 
 #[test]
