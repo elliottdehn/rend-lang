@@ -4,100 +4,202 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rend — The backend you'd put money behind</title>
-<meta name="description" content="rend is a programming language with durable, ACID-transactional state. Multi-statement parallel inside one transaction. Audit-grade by construction. The language is the spec.">
+<meta name="description" content="A programming language for durable, parallel-ACID state. Ship idempotent payments, audit-grade systems, and sharded workloads without sharding code.">
 <style>
   :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --muted: #8b949e;
-    --rule: #21262d;
-    --accent: #58a6ff;
-    --code-bg: #161b22;
-    --code-fg: #d2d8e0;
-    --kw: #ff7b72;
-    --str: #a5d6ff;
-    --num: #79c0ff;
-    --com: #6e7681;
-    --ty: #ffa657;
+    --bg: #0a0b0e;
+    --bg-alt: #0d0f13;
+    --fg: #e8eaef;
+    --muted: #8a91a0;
+    --rule: #1c1f26;
+    --rule-soft: #14161c;
+    --accent: #7b9cff;
+    --accent-dim: #4d619e;
+    --green: #4ade80;
+    --code-bg: #0f1117;
+    --code-fg: #d7dae2;
+    --kw: #ff8a80;
+    --str: #b3d9ff;
+    --num: #92c5ff;
+    --com: #5b6373;
+    --ty: #ffb87a;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
     background: var(--bg);
     color: var(--fg);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
-  main { max-width: 760px; margin: 0 auto; padding: 96px 24px 96px; }
-  header { padding-bottom: 56px; border-bottom: 1px solid var(--rule); }
+  main { max-width: 880px; margin: 0 auto; padding: 88px 28px 96px; }
+  header { padding-bottom: 80px; border-bottom: 1px solid var(--rule); }
   .kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
     color: var(--accent);
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 13px;
-    letter-spacing: 0.06em;
+    font-size: 12px;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    margin-bottom: 28px;
+    margin-bottom: 36px;
+    font-weight: 600;
+  }
+  .kicker::before {
+    content: "";
+    width: 6px; height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 12px var(--accent);
   }
   h1 {
-    font-size: clamp(38px, 6.5vw, 60px);
-    line-height: 1.05;
-    margin: 0 0 16px 0;
-    letter-spacing: -0.025em;
+    font-size: clamp(40px, 7vw, 68px);
+    line-height: 1.0;
+    margin: 0 0 18px 0;
+    letter-spacing: -0.03em;
     font-weight: 700;
   }
   .subhead {
-    font-size: clamp(20px, 2.6vw, 26px);
-    line-height: 1.25;
+    font-size: clamp(20px, 2.8vw, 28px);
+    line-height: 1.2;
     margin: 0 0 28px 0;
     color: var(--accent);
     font-weight: 500;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
   }
   .lede {
-    font-size: 19px;
+    font-size: 18px;
     color: var(--muted);
-    margin: 0;
-    line-height: 1.55;
-    max-width: 620px;
+    margin: 0 0 36px 0;
+    line-height: 1.6;
+    max-width: 640px;
   }
-  .lede strong { color: var(--fg); font-weight: 600; }
-  section { padding: 56px 0; border-bottom: 1px solid var(--rule); }
-  section:last-of-type { border-bottom: none; }
-  h2 {
-    font-size: 26px;
-    margin: 0 0 8px 0;
-    letter-spacing: -0.015em;
+  .cta-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 28px;
+  }
+  .cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--rule);
+    color: var(--fg);
+    padding: 11px 20px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 500;
+    transition: border-color 0.15s, background 0.15s, transform 0.05s;
+  }
+  .cta:hover { border-color: var(--fg); }
+  .cta:active { transform: translateY(1px); }
+  .cta.primary {
+    background: var(--accent);
+    color: #0a0b0e;
+    border-color: var(--accent);
     font-weight: 600;
   }
-  h2 + .subtitle {
+  .cta.primary:hover { background: #a3b9ff; border-color: #a3b9ff; }
+  .install {
+    display: inline-block;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+    color: var(--code-fg);
+  }
+  .install::before {
+    content: "$ ";
     color: var(--muted);
-    font-size: 15px;
-    margin: 0 0 28px 0;
+    user-select: none;
+  }
+  section {
+    padding: 80px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  section:last-of-type { border-bottom: none; padding-bottom: 0; }
+  .section-kicker {
+    display: block;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    font-weight: 600;
+  }
+  h2 {
+    font-size: clamp(28px, 3.6vw, 38px);
+    margin: 0 0 14px 0;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    line-height: 1.15;
+  }
+  h2 + .lead {
+    color: var(--muted);
+    font-size: 17px;
+    margin: 0 0 36px 0;
+    max-width: 620px;
+    line-height: 1.6;
   }
   h3 {
-    font-size: 18px;
-    margin: 28px 0 6px 0;
+    font-size: 19px;
+    margin: 0 0 8px 0;
     font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  h4 {
+    font-size: 14px;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
   p { margin: 0 0 16px 0; }
   p.subtle { color: var(--muted); }
-  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13.5px; }
+  .wedge {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 40px;
+  }
+  .wedge li {
+    padding: 0;
+    margin: 0;
+  }
+  .wedge li p {
+    color: var(--muted);
+    margin: 0;
+    line-height: 1.65;
+  }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+  }
   p code, li code, h2 code, h3 code {
     background: var(--code-bg);
     border: 1px solid var(--rule);
     border-radius: 4px;
     padding: 1px 6px;
     color: var(--code-fg);
-    font-size: 13px;
+    font-size: 12.5px;
   }
   pre {
     background: var(--code-bg);
     border: 1px solid var(--rule);
-    border-radius: 8px;
-    padding: 20px 22px;
+    border-radius: 10px;
+    padding: 22px 24px;
     overflow-x: auto;
-    line-height: 1.55;
-    margin: 16px 0;
+    line-height: 1.6;
+    margin: 0 0 32px 0;
     color: var(--code-fg);
   }
   pre code { color: inherit; background: none; border: none; padding: 0; }
@@ -106,42 +208,96 @@
   .n { color: var(--num); }
   .c { color: var(--com); font-style: italic; }
   .t { color: var(--ty); }
-  .feature-list { list-style: none; padding: 0; margin: 0; }
-  .feature-list li { margin-bottom: 36px; }
-  .feature-list li:last-child { margin-bottom: 0; }
-  .feature-list strong {
+  .escape-list { color: var(--muted); padding-left: 0; list-style: none; }
+  .escape-list li {
+    padding: 18px 0;
+    border-top: 1px solid var(--rule-soft);
+    line-height: 1.65;
+  }
+  .escape-list li:last-child { border-bottom: 1px solid var(--rule-soft); }
+  .escape-list strong {
+    color: var(--fg);
     display: block;
-    color: var(--accent);
-    font-size: 12px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 10px;
+    margin-bottom: 4px;
     font-weight: 600;
   }
-  .cta {
-    display: inline-block;
+  .usecases {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 28px;
+  }
+  .usecases > div {
+    padding: 24px;
+    background: var(--bg-alt);
     border: 1px solid var(--rule);
-    color: var(--fg);
-    padding: 10px 18px;
-    border-radius: 6px;
-    text-decoration: none;
-    font-size: 14px;
-    margin-right: 8px;
-    margin-bottom: 8px;
-    transition: border-color 0.15s, background 0.15s;
+    border-radius: 10px;
   }
-  .cta:hover { border-color: var(--fg); }
-  .cta.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-  .cta.primary:hover { background: #ffffff; }
-  footer {
-    color: var(--muted);
+  .usecases h3 {
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+  .usecases p { color: var(--muted); margin: 0; line-height: 1.6; }
+  .examples-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 32px 0;
+  }
+  .examples-list li {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .examples-list li:last-child { border-bottom: none; }
+  .examples-list code {
+    color: var(--accent);
+    background: none;
+    border: none;
+    padding: 0;
     font-size: 13px;
-    padding-top: 64px;
-    line-height: 1.6;
+    flex-shrink: 0;
+    min-width: 220px;
   }
+  .examples-list span { color: var(--muted); }
+  .status {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 20px 22px;
+    background: var(--bg-alt);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    margin-top: 24px;
+  }
+  .status-dot {
+    width: 10px; height: 10px;
+    background: var(--green);
+    border-radius: 50%;
+    margin-top: 7px;
+    flex-shrink: 0;
+    box-shadow: 0 0 12px rgba(74, 222, 128, 0.4);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .status strong { color: var(--fg); display: block; margin-bottom: 4px; }
+  .status div:last-child { color: var(--muted); font-size: 14.5px; line-height: 1.6; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .nowrap { white-space: nowrap; }
+  footer {
+    margin-top: 80px;
+    padding-top: 32px;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
 </style>
 </head>
 <body>
@@ -152,59 +308,59 @@
   <h1>The backend you'd<br>put money behind.</h1>
   <p class="subhead">Never think about sharding again.</p>
   <p class="lede">
-    A programming language with durable, ACID-transactional state.
-    Multi-statement parallel inside one transaction.
-    Audit-grade by construction. <strong>The language is the spec.</strong>
+    Ship idempotent payments, audit-grade systems, and parallel-ACID
+    workloads on infrastructure that scales without sharding code.
+    rend is a programming language for durable state — the data lives
+    in the language, the transactions parallelize inside one commit,
+    and bugs that would ship in SQL are absent at the type system.
   </p>
+  <div class="cta-row">
+    <a class="cta primary" href="https://github.com/elliottdehn/rend-lang">Read the source</a>
+    <a class="cta" href="https://github.com/elliottdehn/rend-lang/tree/main/crates/rend/examples">Browse examples</a>
+  </div>
+  <div class="install">cargo install --git https://github.com/elliottdehn/rend-lang rend</div>
 </header>
 
 <section>
-  <h2>The wedge</h2>
-  <p class="subtitle">What an application backend can't be when its kernel is SQL — and what it becomes when its kernel is a real programming language.</p>
-  <ul class="feature-list">
+  <span class="section-kicker">01 — The wedge</span>
+  <h2>What rend gives you that SQL + ORM can't.</h2>
+  <p class="lead">Three structural properties that aren't a configuration knob — they're how the language is shaped.</p>
+
+  <ul class="wedge">
     <li>
-      <strong>Parallel ACID, actually</strong>
-      <p>SQL gives you ACID inside a transaction but serializes the body. Real multi-statement parallelism requires multiple transactions, which breaks atomicity across the batch. rend's <code>parallel&nbsp;{ }</code> and <code>parallel&nbsp;for ... to</code> run multiple writes concurrently inside one transaction — each statement in its own shadow Tx, deltas merged in stable order with OCC conflict re-run. Outside observers see a single serializable txn.</p>
+      <h3>Parallel ACID. Actually.</h3>
+      <p>Write a batch of operations and have them run concurrently inside one serializable transaction. SQL gives you ACID <em>or</em> parallelism — never both, because multi-statement parallelism requires splitting into multiple txns, which breaks atomicity across the batch. rend's <code>parallel for</code> runs statements in shadow transactions that merge in stable order with conflict re-run. Outside observers see one txn; inside, the work fans out across cores.</p>
     </li>
     <li>
-      <strong>The language is the spec</strong>
-      <p>Schema lives in source, not a pile of migration files. The compiler diffs declarations against the deployed ledger and applies additive changes automatically; transforming changes require an explicit <code>migration</code> block that runs exactly once at version bump and can be deleted from source afterward. You always know what the current contract is by reading the code — no external schema viewer required.</p>
+      <h3>Bugs the parser refuses.</h3>
+      <p>Sticky-typed boundaries — declare a parameter as <code>`string`</code> and the type system rejects every call site that tries to pass a computed value. The SQL-injection class of bug isn't patrolled at runtime — it's structurally absent at the API surface. The same property propagates through struct fields, array elements, and let-bindings; the safety lives in the type signature, not the code review.</p>
     </li>
     <li>
-      <strong>Audit-grade by construction</strong>
-      <p>Explicit literals — <code>`&lt;value&gt;`</code> — are a parse-time guarantee that no code can hide in a value. Sticky typing propagates the constraint through API boundaries, so a function declaring <code>name: `string`</code> rejects any call site that passes computed data. The class of bug that ships SQL injections past code review is structurally absent — not patrolled, absent.</p>
-    </li>
-    <li>
-      <strong>Stored procedures, but a real language</strong>
-      <p>PL/pgSQL has variables, control flow, and exceptions — the surface shape of a language — but no module system, an anemic type system, exception handling that allocates per-call subtransactions you can't see in the source, debugging by <code>RAISE NOTICE</code> and <code>tail&nbsp;-f</code>, and version control through migration files instead of code. rend's <code>entry&nbsp;fn</code> sits next to the data because the data IS in the language's value space — no DSL bolted onto SQL, no category confusion.</p>
+      <h3>Never think about sharding.</h3>
+      <p>Keys hash automatically across the cluster; cross-shard transactions are transparent; no partition keys to pick, no consistent-hashing config, no manual rebalancing. Built atop FoundationDB — the same storage layer Apple uses for iCloud and Snowflake uses for metadata. You inherit a decade of deterministic-simulation testing and the resolver model for cross-shard atomic commits. From rend's side, it's all one ACID database.</p>
     </li>
   </ul>
 </section>
 
 <section>
-  <h2>What it feels like</h2>
-  <p class="subtitle">A rend program has two layers: the <strong>module</strong> — the durable schema and the helper logic, deployed once — and <strong>main</strong> — the per-request transaction, synthesized fresh by the JIT-codegen layer from each incoming payload.</p>
+  <span class="section-kicker">02 — What it feels like</span>
+  <h2>A request handler, in two layers.</h2>
+  <p class="lead">A rend program has a <strong>module</strong> — the durable schema and reusable helpers, evolved in source — and <strong>main</strong> — the per-request transaction, synthesized fresh by the JIT-codegen layer from each incoming payload.</p>
 
-  <h3 style="margin-top: 28px;">The module &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— durable, deployed once</span></h3>
-  <p>Schema, structs, private helpers, and the stable <em>entry</em> functions that form the module's API. Lives in source; the runtime ledger tracks what's actually deployed.</p>
+  <h4>The module &nbsp;·&nbsp; durable, deployed once</h4>
 <pre><code><span class="k">module</span> strdedup;
 
 <span class="k">struct</span> Entry { id: <span class="t">u64</span>, created: <span class="t">u64</span> }
 
-<span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, Entry&gt;;       <span class="c">// content → Entry (HAMT-disjoint per key)</span>
-<span class="k">state</span> by_id:   <span class="k">pbtree</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;      <span class="c">// id → content, sorted (for GC walk)</span>
-<span class="k">state</span> next_id: <span class="t">u64</span>;                     <span class="c">// sole intentionally-contended cell</span>
+<span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, Entry&gt;;
+<span class="k">state</span> by_id:   <span class="k">pbtree</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;
+<span class="k">state</span> next_id: <span class="t">u64</span>;
 
-<span class="k">unique_index</span> by_id <span class="k">on</span> forward.(id <span class="k">ASC</span>);  <span class="c">// auto-maintained on forward writes</span>
+<span class="k">unique_index</span> by_id <span class="k">on</span> forward.(id <span class="k">ASC</span>);
 
 <span class="k">struct</span> InternResult { id: <span class="t">u64</span>, fresh: <span class="t">bool</span> }
-
 <span class="k">const</span> DAY_MS: <span class="t">u64</span> = <span class="n">86400000u64</span>;
 
-<span class="c">// Private helper. One read on a dedup hit; one write on a miss.</span>
-<span class="c">// The slot is caller-supplied, so this function never contends</span>
-<span class="c">// on `next_id`. `s: `string`` is sticky — any caller must supply</span>
-<span class="c">// a backtick-tagged value; computed strings are a typeck error.</span>
 <span class="k">fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing.id &gt; <span class="n">0u64</span> {
@@ -214,12 +370,6 @@
     <span class="k">return</span> InternResult { id: slot, fresh: <span class="k">true</span> };
 }
 
-<span class="c">// The stable API. The signature is what the JIT-codegen layer</span>
-<span class="c">// generates against, what clients call, and what every `main`</span>
-<span class="c">// the synthesizer emits is a thin wrapper over. `strings:</span>
-<span class="c">// `[string]`` means the payload must arrive as inert data —</span>
-<span class="c">// the safety property propagates outward from this signature</span>
-<span class="c">// through every call site, no matter how many hops.</span>
 <span class="k">entry fn</span> intern_batch(strings: <span class="k">`</span>[<span class="t">string</span>]<span class="k">`</span>) -&gt; [InternResult] {
     <span class="k">let</span> n       = len(strings);
     <span class="k">let</span> slots   = <span class="k">reserve</span> n <span class="k">from</span> next_id;
@@ -229,32 +379,23 @@
         intern_at(s, slots[i])
     }
 
-    <span class="c">// One GC sweep per batch — 2 stale rows per fresh insert.</span>
-    <span class="c">// Doing this here (rather than inside intern_at) keeps the</span>
-    <span class="c">// parallel legs free of contention on the same low-id rows.</span>
-    <span class="c">// Walking `by_id` yields content strings in id order; deleting</span>
-    <span class="c">// from `forward` auto-removes the corresponding back-link via</span>
-    <span class="c">// the index maintenance pass. ids are assigned monotonically,</span>
-    <span class="c">// so `created` is non-decreasing in id — the walk stops at</span>
-    <span class="c">// the first non-stale entry.</span>
+    <span class="c">// 2-stale-row GC per fresh insert, in one sweep after the merge.</span>
     <span class="k">let</span> fresh = <span class="n">0u64</span>;
     <span class="k">for</span> r <span class="k">in</span> results {
         <span class="k">if</span> r.fresh { fresh = fresh + <span class="n">1u64</span>; }
     }
     <span class="k">let</span> now    = block_timestamp();
     <span class="k">let</span> cutoff = <span class="k">if</span> now &gt; DAY_MS { now - DAY_MS } <span class="k">else</span> { <span class="n">0u64</span> };
-    <span class="k">for</span> old_content <span class="k">in</span> by_id <span class="k">limit</span> fresh * <span class="n">2u64</span> {
-        <span class="k">let</span> e = forward[old_content];
-        <span class="k">if</span> e.created &gt;= cutoff { <span class="k">break</span>; }
-        <span class="k">delete</span> forward[old_content];
+    <span class="k">for</span> old <span class="k">in</span> by_id <span class="k">limit</span> fresh * <span class="n">2u64</span> {
+        <span class="k">if</span> forward[old].created &gt;= cutoff { <span class="k">break</span>; }
+        <span class="k">delete</span> forward[old];
     }
 
     <span class="k">return</span> results;
 }
 </code></pre>
 
-  <h3 style="margin-top: 36px;">The transaction &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— per-request, JIT-synthesized</span></h3>
-  <p>Each request gets its own <code>main</code> emitted by the JIT-codegen layer from the incoming payload. The payload is embedded as an <em>explicit literal</em> so the parser refuses any code-shaped fragment; the body is a one-line call into the stable module entry. Everything substantive — atomic id reservation, the parallel-for fan-out, the shadow-Tx merge, the conflict re-run — lives behind the entry's signature, so it stays the same whether the call comes from a client SDK or a synthesized main.</p>
+  <h4>The transaction &nbsp;·&nbsp; per-request, JIT-synthesized</h4>
 <pre><code><span class="k">fn</span> main() -&gt; [InternResult] {
     <span class="k">return</span> intern_batch(<span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>);
 }
@@ -262,20 +403,18 @@
 </section>
 
 <section>
-  <h2>The same thing in SQL</h2>
-  <p class="subtitle">For comparison: a Postgres / Supabase implementation of the same batch-dedup operation. Schema lives in a migration file; the logic lives in a PL/pgSQL stored procedure; the app calls it via PostgREST RPC.</p>
+  <span class="section-kicker">03 — What you escape</span>
+  <h2>The same thing in PL/pgSQL.</h2>
+  <p class="lead">A working Postgres implementation of the same batch-dedup-with-GC operation. The structural costs aren't a style choice; they're how PL/pgSQL is shaped.</p>
 
-  <h3 style="margin-top: 28px;">The schema &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— migrations/0001_create_strings.sql + 0002_add_created_at.sql</span></h3>
 <pre><code><span class="k">CREATE TABLE</span> strings (
     id          <span class="t">BIGSERIAL</span> <span class="k">PRIMARY KEY</span>,
     content     <span class="t">TEXT</span> <span class="k">NOT NULL UNIQUE</span>,
     created_at  <span class="t">TIMESTAMPTZ</span> <span class="k">NOT NULL DEFAULT</span> <span class="k">NOW</span>()
 );
 <span class="k">CREATE INDEX</span> idx_strings_created <span class="k">ON</span> strings (created_at);
-</code></pre>
 
-  <h3 style="margin-top: 32px;">The stored procedure &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— database/functions/intern_batch.sql</span></h3>
-<pre><code><span class="k">CREATE OR REPLACE FUNCTION</span> intern_batch(inputs <span class="t">TEXT</span>[])
+<span class="k">CREATE OR REPLACE FUNCTION</span> intern_batch(inputs <span class="t">TEXT</span>[])
 <span class="k">RETURNS</span> <span class="k">TABLE</span> (id <span class="t">BIGINT</span>, fresh <span class="t">BOOLEAN</span>)
 <span class="k">LANGUAGE</span> plpgsql <span class="k">AS</span> $$
 <span class="k">DECLARE</span>
@@ -286,9 +425,6 @@
 <span class="k">BEGIN</span>
     cutoff := <span class="k">NOW</span>() - <span class="k">INTERVAL</span> <span class="s">'24 hours'</span>;
     <span class="k">FOREACH</span> s <span class="k">IN ARRAY</span> inputs <span class="k">LOOP</span>
-        <span class="c">-- Try INSERT first. ON CONFLICT DO NOTHING returns no row</span>
-        <span class="c">-- on a duplicate, so `new_id` stays NULL — that's the only</span>
-        <span class="c">-- signal we have to distinguish a fresh insert from a hit.</span>
         <span class="k">INSERT INTO</span> strings (content) <span class="k">VALUES</span> (s)
         <span class="k">ON CONFLICT</span> (content) <span class="k">DO NOTHING</span>
         <span class="k">RETURNING</span> strings.id <span class="k">INTO</span> new_id;
@@ -297,69 +433,102 @@
             found_id := new_id;
             fresh := <span class="k">TRUE</span>;
             new_id := <span class="k">NULL</span>;
-
-            <span class="c">-- GC on each fresh insert: drop up to 2 oldest stale rows.</span>
-            <span class="c">-- Subquery picks the candidates by ascending id; the outer</span>
-            <span class="c">-- DELETE removes them. The unique-on-content INSERT above</span>
-            <span class="c">-- and this DELETE share a row-lock path against the unique</span>
-            <span class="c">-- index — under concurrent batches you'll see lock-ordering</span>
-            <span class="c">-- waits, and the app retries serialization failures.</span>
-            <span class="k">DELETE FROM</span> strings
-            <span class="k">WHERE</span> id <span class="k">IN</span> (
+            <span class="k">DELETE FROM</span> strings <span class="k">WHERE</span> id <span class="k">IN</span> (
                 <span class="k">SELECT</span> id <span class="k">FROM</span> strings
                 <span class="k">WHERE</span> created_at &lt; cutoff
-                <span class="k">ORDER BY</span> id <span class="k">ASC</span>
-                <span class="k">LIMIT</span> <span class="n">2</span>
+                <span class="k">ORDER BY</span> id <span class="k">ASC</span> <span class="k">LIMIT</span> <span class="n">2</span>
             );
         <span class="k">ELSE</span>
-            <span class="c">-- Duplicate — fall back to SELECT to find the existing id.</span>
             <span class="k">SELECT</span> strings.id <span class="k">INTO</span> found_id
             <span class="k">FROM</span> strings <span class="k">WHERE</span> content = s;
             fresh := <span class="k">FALSE</span>;
         <span class="k">END IF</span>;
-
-        id := found_id;
-        <span class="k">RETURN NEXT</span>;
+        id := found_id; <span class="k">RETURN NEXT</span>;
     <span class="k">END LOOP</span>;
 <span class="k">END</span>;
 $$;
 </code></pre>
 
-  <p class="subtle" style="margin-top: 28px;">Pain points the rend version doesn't inherit:</p>
-  <ul style="color: var(--muted); padding-left: 22px; line-height: 1.6;">
-    <li><strong style="color: var(--fg);">Decomposition isn't available.</strong> The rend version factors into a private <code>intern_at</code>, a stable <code>entry fn intern_batch</code>, and a one-line <code>main</code>. PL/pgSQL has no module-level public/private distinction; functions can call other functions but doing so commits you to either the subtransaction tax (via <code>EXCEPTION</code>) or the RAISE-aborts-the-caller trap. Real procedures grow into dense monolithic blocks because the language doesn't give you the primitives to split them. The density you see here isn't a presentation choice — it's how the code looks in production.</li>
-    <li><strong style="color: var(--fg);">Every INSERT pays a sequence advance.</strong> <code>BIGSERIAL</code> is one global hot atomic cell every concurrent writer queues against — the contention bottleneck appears before any business logic does. <code>CACHE N</code> mitigates a bit via per-session pre-allocation but creates gap holes, doesn't replicate cleanly, and still pays the per-row cost amortized differently rather than removing it. rend's <code>reserve N from next_id</code> does <em>one</em> atomic bump per call and hands the reserved ids to the parallel-for legs — the contended cell sees O(batches) traffic instead of O(rows), and ids stay monotonic so the GC's break-early walk still works.</li>
-    <li><strong style="color: var(--fg);">Serial by construction.</strong> The <code>FOREACH</code> loop runs one string at a time. To parallelize you'd call the function from multiple app connections, each with its own transaction — which breaks atomicity across the batch.</li>
-    <li><strong style="color: var(--fg);">The GC and the dedup share lock paths.</strong> The unique-on-content INSERT and the DELETE both touch the strings table's indexes. Two batches running concurrently can deadlock on the same rows even though the writes are logically disjoint; the app sees a serialization-failure exception and retries. The rend version's GC writes (forward / reverse / created / ids) are HAMT/pbtree-disjoint per id, so concurrent GCs of different ids commute under OCC merge with no lock dance.</li>
-    <li><strong style="color: var(--fg);">Exception handling has a tax.</strong> Using <code>EXCEPTION WHEN unique_violation</code> instead of the CTE-UNION pattern would allocate a subtransaction per loop iteration. The CTE pattern is the canonical workaround.</li>
-    <li><strong style="color: var(--fg);">PL/pgSQL is a DSL bolted onto SQL.</strong> Anemic types, no module system, no real composability, debugging by <code>RAISE NOTICE</code>, tests run inside the database. The surface looks like programming but every property of the tool fights you.</li>
-    <li><strong style="color: var(--fg);">Schema lives in migration files.</strong> Every change adds another <code>NNNN_xyz.sql</code> file the codebase carries forever. You can never look at a single file and know what the current schema is — you need external tooling to introspect the live database.</li>
-    <li><strong style="color: var(--fg);">User input flows in as untagged <code>TEXT[]</code>.</strong> Nothing in the type signature distinguishes a literal payload value from a string the application built by concatenation. The SQL-injection class of bug is a property of the API surface, not absent by construction.</li>
+  <ul class="escape-list">
+    <li>
+      <strong>Every INSERT pays a sequence advance.</strong>
+      <code>BIGSERIAL</code> is one global hot atomic cell every concurrent writer queues against. rend's <code>reserve N from next_id</code> does one bump per batch and hands the ids to N parallel legs.
+    </li>
+    <li>
+      <strong>Decomposition isn't available.</strong>
+      PL/pgSQL has no module-level public/private; calling another function carries the subtransaction tax. Real procedures grow into monolithic blocks. rend factors into helper / stable entry / one-line main.
+    </li>
+    <li>
+      <strong>Serial by construction.</strong>
+      <code>FOREACH</code> runs one row at a time. Parallelism requires multiple connections, which means multiple transactions, which breaks atomicity across the batch.
+    </li>
+    <li>
+      <strong>GC and dedup share lock paths.</strong>
+      The unique-on-content INSERT and the DELETE both touch the strings table's indexes. Concurrent batches deadlock on logically-disjoint writes; the app retries serialization failures.
+    </li>
+    <li>
+      <strong>Schema lives in migration files.</strong>
+      Every change adds another <code>NNNN_xyz.sql</code> file the codebase carries forever. You can never look at a single file and know what's deployed. rend's source IS the schema.
+    </li>
+    <li>
+      <strong>User input flows in as untagged <code>TEXT[]</code>.</strong>
+      Nothing in the type signature distinguishes a literal payload from a string the app built by concatenation. SQL-injection is a property of the API surface, not absent by construction.
+    </li>
   </ul>
 </section>
 
 <section>
-  <h2>What it isn't</h2>
-  <p>rend is the durable kernel. There is no built-in auth dashboard, no realtime websocket layer, no blob storage, no admin UI. Those are engineering on top of a substrate — and the substrate is the part that's structurally hard.</p>
-  <p>What you get: ACID transactions that actually parallelize, a language that composes the way languages do, and a type system that catches the class of bug the alternatives ship past code review.</p>
-  <p class="subtle">What you provide: HTTP, auth, realtime, dashboards. These ride on top of any reasonable application layer and don't need to live in the kernel.</p>
+  <span class="section-kicker">04 — Built for</span>
+  <h2>Workloads where wrong has a number attached.</h2>
+  <p class="lead">rend is shaped for the kind of systems where "eventually correct" isn't an answer.</p>
+
+  <div class="usecases">
+    <div>
+      <h3>Financial rails</h3>
+      <p>Idempotent transfers with structurally-enforced request-id dedup. Retry the same transaction id, get the recorded outcome — no double-debit, no app-side retry-loop, no eventual-consistency hand-waving.</p>
+    </div>
+    <div>
+      <h3>Audit-mandated systems</h3>
+      <p>Current-state schema lives in your source tree, not a migration pile. Untagged user input can't reach a typed parameter. Auditors read code, not migration archeology.</p>
+    </div>
+    <div>
+      <h3>Multi-tenant SaaS</h3>
+      <p>Hash sharding handles tenants of any size. No shard-key picking, no cross-tenant query coordination, no "we'll deal with sharding at Series B."</p>
+    </div>
+  </div>
 </section>
 
 <section>
-  <h2>Get started</h2>
-  <p>
-    <a class="cta primary" href="https://github.com/elliottdehn/rend-lang">Source on GitHub</a>
-    <a class="cta" href="https://github.com/elliottdehn/rend-lang/tree/main/crates/rend/examples">Browse examples</a>
-  </p>
-  <p class="subtle" style="margin-top: 24px;">
-    Examples to read first: <code>50_string_dedup</code> for the disjoint-pmap interning pattern;
-    <code>51_parallel_for_reserve</code> for the parallel-batch construct;
-    <code>52_explicit_literals</code> and <code>53_sticky_explicit_literals</code> for the data/code boundary.
-  </p>
+  <span class="section-kicker">05 — Get started</span>
+  <h2>Install rend.</h2>
+  <p class="lead">The language and runtime are open source. Clone, build, run an example.</p>
+
+<pre><code>$ cargo install --git https://github.com/elliottdehn/rend-lang rend
+$ rend crates/rend/examples/53_sticky_explicit_literals.rd
+</code></pre>
+
+  <h4>Examples worth reading first</h4>
+  <ul class="examples-list">
+    <li><code>50_string_dedup.rd</code> <span>HAMT-disjoint interning, the canonical dedup pattern</span></li>
+    <li><code>51_parallel_for_reserve.rd</code> <span>reserve + arr + parallel-for-to end-to-end</span></li>
+    <li><code>52_explicit_literals.rd</code> <span>backtick literals at the JIT-codegen boundary</span></li>
+    <li><code>53_sticky_explicit_literals.rd</code> <span>sticky types propagating across an API surface</span></li>
+  </ul>
+
+  <div class="status">
+    <div class="status-dot"></div>
+    <div>
+      <strong>rend is open source and in active development.</strong>
+      The language and runtime run today. Managed hosting on
+      FoundationDB is on the roadmap. Star the repo, file issues,
+      send PRs.
+    </div>
+  </div>
 </section>
 
 <footer>
-  <p>rend is in active development. The kernel is in; the productization layer is the road ahead.</p>
+  <span>rend — the backend you'd put money behind</span>
+  <span><a href="https://github.com/elliottdehn/rend-lang">github.com/elliottdehn/rend-lang</a></span>
 </footer>
 
 </main>
