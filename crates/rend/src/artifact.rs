@@ -615,6 +615,12 @@ fn write_type(out: &mut Vec<u8>, ty: &Type) {
         Type::Address => out.push(ty_tag::ADDRESS),
         Type::Bytes => out.push(ty_tag::BYTES),
         Type::Array(elem) => { out.push(ty_tag::ARRAY); write_type(out, elem); }
+        // `` `T` `` is a compile-time-only tag. At the bytecode-
+        // artifact level (which describes runtime types) it
+        // collapses to its inner type — the safety property lived
+        // at typeck time and doesn't need to round-trip through
+        // serialization.
+        Type::ExplicitLiteral(inner) => write_type(out, inner),
         Type::Set(elem)   => { out.push(ty_tag::SET);   write_type(out, elem); }
         Type::Dict { key, value } => {
             out.push(ty_tag::DICT); write_type(out, key); write_type(out, value);

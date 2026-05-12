@@ -204,6 +204,10 @@ impl Value {
     /// has no aggregate Value form; reads operate per-cell).
     pub fn default_for(ty: &Type) -> Value {
         match ty {
+            // `` `T` `` defaults to T's default. The explicit-literal
+            // tag is a compile-time property; at runtime the value
+            // is just a T.
+            Type::ExplicitLiteral(inner) => Value::default_for(inner),
             Type::Int => Value::int(0),
             Type::UInt => Value::uint(0u32),
             Type::Float => Value::Float(F64Bits(0.0)),

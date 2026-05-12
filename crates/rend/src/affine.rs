@@ -510,6 +510,9 @@ fn check_expr(
             check_expr(count, env, sigs, states, cap_decls)?;
             Ok(Type::Int)
         }
+        ExprKind::ExplicitLiteral(inner) => {
+            check_expr(inner, env, sigs, states, cap_decls)
+        }
         ExprKind::StructLit { name, fields } => {
             for (_, e) in fields { check_expr(e, env, sigs, states, cap_decls)?; }
             // If the literal names a cap, return the matching cap type

@@ -208,6 +208,7 @@ fn substitute_in_expr(expr: &mut Expr, subst: &HashMap<String, Expr>) {
         }
         ExprKind::ArrayAlloc { len, .. } => substitute_in_expr(len, subst),
         ExprKind::Reserve { count, .. } => substitute_in_expr(count, subst),
+        ExprKind::ExplicitLiteral(inner) => substitute_in_expr(inner, subst),
         ExprKind::DictLit(pairs) => {
             for (k, v) in pairs {
                 substitute_in_expr(k, subst);

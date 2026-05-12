@@ -187,10 +187,10 @@ fn explicit_literal_rejects_non_neg_unary() {
 }
 
 #[test]
-fn explicit_literal_value_flows_normally_after_construction() {
-    // No type-level marker: once validated, the value is just a
-    // normal Value and downstream code can use it freely. The
-    // safety property holds at the construction site only.
+fn explicit_literal_widens_into_plain_typed_parameter() {
+    // `` `T` `` widens to T at the call site — a backtick-tagged
+    // value can flow into any plain `T` parameter without
+    // ceremony.
     let kv = rend::kv::InMemoryKv::new();
     let src = r"
         module el;
@@ -202,6 +202,148 @@ fn explicit_literal_value_flows_normally_after_construction() {
     ";
     let out = Engine::new().execute(src, Fuel::new(2_000), &kv).unwrap();
     assert_eq!(out.result, Value::U64(42));
+}
+
+#[test]
+fn sticky_param_accepts_backtick_value() {
+    // A `` `string` `` parameter accepts a backtick-tagged value
+    // — the sticky tag matches.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module el;
+        entry fn register(name: `string`) -> u64 { return 1u64; }
+        fn main() -> u64 {
+            return register(`"alice"`);
+        }
+    "#;
+    let out = Engine::new().execute(src, Fuel::new(2_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(1));
+}
+
+#[test]
+fn sticky_param_rejects_non_backtick_value() {
+    // A `` `string` `` parameter rejects a plain (non-tagged)
+    // value — sticky narrowing is forbidden.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module el;
+        entry fn register(name: `string`) -> u64 { return 1u64; }
+        fn main() -> u64 {
+            let s: string = "computed_at_runtime";
+            return register(s);
+        }
+    "#;
+    let err = Engine::new()
+        .execute(src, Fuel::new(2_000), &kv)
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("expected `string`"),
+        "expected sticky-narrowing rejection, got: {msg}",
+    );
+}
+
+#[test]
+fn sticky_propagates_through_let_to_parameter() {
+    // A backtick-tagged value bound to a let preserves its tag,
+    // so passing the binding to a `` `T` `` parameter works.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module el;
+        entry fn register(name: `string`) -> u64 { return 1u64; }
+        fn main() -> u64 {
+            let n: `string` = `"elliott"`;
+            return register(n);
+        }
+    "#;
+    let out = Engine::new().execute(src, Fuel::new(2_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(1));
+}
+
+#[test]
+fn computing_operator_erases_the_explicit_literal_tag() {
+    // Adding `` `5u64` `` and 1u64 produces a plain u64 — the
+    // result is computed, not constructed inertly. Passing it to
+    // a `` `u64` `` parameter must fail.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module el;
+        entry fn want(n: `u64`) -> u64 { return n; }
+        fn main() -> u64 {
+            let v = `5u64` + 1u64;
+            return want(v);
+        }
+    ";
+    let err = Engine::new()
+        .execute(src, Fuel::new(2_000), &kv)
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("expected `u64`"),
+        "expected post-operator tag-erasure rejection, got: {msg}",
+    );
+}
+
+#[test]
+fn field_access_on_explicit_literal_struct_preserves_tag() {
+    // A `` `Point` `` value's fields are themselves inert
+    // literals — field access keeps the tag, so the field value
+    // can flow into a `` `u64` `` parameter.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module el;
+        struct Point { x: u64, y: u64 }
+        entry fn want(n: `u64`) -> u64 { return n; }
+        fn main() -> u64 {
+            let p = `Point { x: 10u64, y: 20u64 }`;
+            return want(p.x);
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(2_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(10));
+}
+
+#[test]
+fn array_indexing_on_explicit_literal_array_preserves_tag() {
+    // `xs: ` `` `[u64]` `` `: xs[i]` is `` `u64` ``.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module el;
+        entry fn want(n: `u64`) -> u64 { return n; }
+        fn main() -> u64 {
+            let xs = `[7u64, 8u64, 9u64]`;
+            return want(xs[1i64]);
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(2_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(8));
+}
+
+#[test]
+fn struct_field_typed_as_sticky_requires_backtick_value() {
+    // Declaring a struct field as `` `T` `` forces every value
+    // populating that field to originate from a backtick.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module el;
+        struct Profile { name: `string`, age: u64 }
+        fn main() -> u64 {
+            // Note: the *whole* struct literal isn't backtick-tagged
+            // — only `name` needs to be. The field-level constraint
+            // propagates independently.
+            let computed = "runtime_string";
+            let p = Profile { name: computed, age: 30u64 };
+            return p.age;
+        }
+    "#;
+    let err = Engine::new()
+        .execute(src, Fuel::new(2_000), &kv)
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("expected `string`"),
+        "expected sticky-field rejection, got: {msg}",
+    );
 }
 
 #[test]

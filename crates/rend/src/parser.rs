@@ -665,6 +665,16 @@ impl Parser {
     fn parse_type(&mut self) -> Result<Type, Error> {
         let span = self.cur_span();
         match self.peek_token().clone() {
+            Token::Backtick => {
+                // `` `T` `` — sticky explicit-literal-typed slot.
+                // Parameters / fields / let annotations of this type
+                // require the corresponding value to originate from
+                // a backtick context.
+                self.advance();
+                let inner = self.parse_type()?;
+                self.expect(Token::Backtick, "expected closing '`' on `T` type")?;
+                return Ok(Type::ExplicitLiteral(Box::new(inner)));
+            }
             Token::Set => {
                 self.advance();
                 self.expect(Token::Lt, "expected '<' after 'set'")?;
@@ -1749,11 +1759,12 @@ impl Parser {
             }
             Token::Backtick => {
                 // `` `<expr>` `` — explicit literal. Parse the inner
-                // expression normally, then walk it to ensure every
-                // node is in the inert-literal subset. No AST
-                // wrapper: once validated, the inner expr is just a
-                // normal literal expression downstream (the safety
-                // property holds at the construction site).
+                // expression, validate it's inert (recursive parse-
+                // time check), then wrap as `ExprKind::ExplicitLiteral`
+                // so typeck can tag the value as sticky `` `T` ``.
+                // The wrapper is transparent at compile / VM time:
+                // the inner expression evaluates normally and produces
+                // an ordinary Value at runtime.
                 let start = span.start;
                 self.advance();
                 let saved = self.no_struct_literal;
@@ -1764,7 +1775,7 @@ impl Parser {
                 self.expect(Token::Backtick, "expected closing '`' on explicit literal")?;
                 validate_inert_literal(&inner)?;
                 return Ok(Expr {
-                    kind: inner.kind,
+                    kind: ExprKind::ExplicitLiteral(Box::new(inner)),
                     span: Span { start, end: close.end },
                 });
             }

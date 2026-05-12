@@ -295,6 +295,19 @@ pub enum Type {
     Address,
     Bytes,
     Array(Box<Type>),
+    /// `` `T` `` — sticky explicit-literal-typed value. A value of
+    /// this type was constructed through a `` `<expr>` `` context
+    /// at some upstream point (or propagated from one). Widens to
+    /// `T` in most uses (you can pass `` `u64` `` where `u64` is
+    /// expected), but `T` does *not* narrow to `` `T` `` — to bind
+    /// a non-backtick-originated value to a `` `T` `` slot you must
+    /// re-construct it via a fresh `` `...` `` expression.
+    ///
+    /// Computing operators erase the tag: `(\`5u64\`) + 1u64` has
+    /// type `u64`, not `` `u64` ``. Field access on a
+    /// `` `Struct { ... }` `` preserves the tag, since the field
+    /// values were themselves part of the inert literal.
+    ExplicitLiteral(Box<Type>),
     /// In-memory set of unique elements — non-storage. For storage, build a
     /// `state map<T, bool>` instead.
     Set(Box<Type>),
@@ -382,6 +395,18 @@ pub struct InterfaceMethodSig {
 }
 
 impl Type {
+    /// Strip a `` `T` `` wrapper, returning the inner type. Most
+    /// analyses (effects, affine, prefetch, storage layout) don't
+    /// care about the explicit-literal tag — only typeck's
+    /// compatibility rules do. Helper to make the rest of the
+    /// codebase treat `` `T` `` as `T` cleanly.
+    pub fn unwrap_explicit(&self) -> &Type {
+        match self {
+            Type::ExplicitLiteral(inner) => inner.unwrap_explicit(),
+            other => other,
+        }
+    }
+
     /// Copy semantics: the value is duplicated (not moved) on each use.
     /// Non-Copy types (currently just Resource) participate in affine analysis.
     pub fn is_copy(&self) -> bool {
@@ -390,6 +415,7 @@ impl Type {
             | Type::I32 | Type::U32 | Type::U64 | Type::U128
             | Type::Bool | Type::Unit | Type::String | Type::Address | Type::Bytes => true,
             Type::Array(elem) => elem.is_copy(),
+            Type::ExplicitLiteral(inner) => inner.is_copy(),
             Type::Set(elem) => elem.is_copy(),
             Type::Dict { key, value } => key.is_copy() && value.is_copy(),
             Type::Struct { fields, .. } => fields.iter().all(|(_, t)| t.is_copy()),
@@ -418,6 +444,7 @@ impl Type {
             Type::Int | Type::I32 | Type::U32 | Type::U64 | Type::U128
             | Type::Bool | Type::String | Type::Address | Type::Bytes => true,
             Type::Array(elem) => elem.is_keyable(),
+            Type::ExplicitLiteral(inner) => inner.is_keyable(),
             Type::Struct { fields, .. } => fields.iter().all(|(_, t)| t.is_keyable()),
             Type::Enum { variants, .. } => variants
                 .iter()
@@ -444,6 +471,7 @@ impl std::fmt::Display for Type {
             Type::Address => write!(f, "Address"),
             Type::Bytes => write!(f, "bytes"),
             Type::Array(t) => write!(f, "[{t}]"),
+            Type::ExplicitLiteral(t) => write!(f, "`{t}`"),
             Type::Set(t) => write!(f, "set<{t}>"),
             Type::Dict { key, value } => write!(f, "dict<{key}, {value}>"),
             Type::Map { key, value } => write!(f, "map<{key}, {value}>"),
@@ -622,6 +650,16 @@ pub enum ExprKind {
     },
     Index { target: Box<Expr>, key: Box<Expr> },
     Array(Vec<Expr>),
+    /// `` `<expr>` `` — explicit-literal wrapper. The inner
+    /// expression is parse-validated to be inert (primitives,
+    /// struct / array / tuple literals with inert sub-expressions,
+    /// JSON, `-<numeric>`). Typeck wraps the inner expression's
+    /// type in `Type::ExplicitLiteral`, which propagates stickily
+    /// through assignments / parameter passes / field accesses /
+    /// array indexes. Compile and interp treat the wrapper as
+    /// transparent — at runtime the value is exactly the inner
+    /// value, with no overhead.
+    ExplicitLiteral(Box<Expr>),
     /// `arr<T>[N]` — allocates a `[T]` of length `N` filled with
     /// `T`'s default value. Distinct from an array literal because
     /// the count is a runtime expression and the elements never

@@ -594,6 +594,7 @@ fn annotate_expr(
         }
         ExprKind::ArrayAlloc { len, .. } => annotate_expr(len, scopes, state_types, ifaces),
         ExprKind::Reserve { count, .. } => annotate_expr(count, scopes, state_types, ifaces),
+        ExprKind::ExplicitLiteral(inner) => annotate_expr(inner, scopes, state_types, ifaces),
         ExprKind::DictLit(pairs) => {
             for (k, v) in pairs.iter_mut() {
                 annotate_expr(k, scopes, state_types, ifaces);
@@ -715,6 +716,7 @@ fn is_storable(ty: &Type) -> bool {
         Type::Int | Type::UInt | Type::Float | Type::I32 | Type::U32 | Type::U64 | Type::U128
         | Type::Bool | Type::String | Type::Address | Type::Bytes => true,
         Type::Array(elem) => is_storable(elem),
+        Type::ExplicitLiteral(inner) => is_storable(inner),
         Type::Struct { fields, .. } => fields.iter().all(|(_, t)| is_storable(t)),
         Type::Map { .. } | Type::PMap { .. } | Type::PBTree { .. } | Type::PVec { .. } => true,
         Type::Json => true,
@@ -2410,6 +2412,15 @@ impl TypeChecker {
                     }
                 }
                 let target_ty = self.check_expr(target, env)?;
+                // Indexing into a `` `[T]` `` keeps the tag on each
+                // element: the surrounding inert literal context
+                // guarantees every element was itself inert at
+                // construction. Unwrap the outer `ExplicitLiteral`
+                // to find the array, then re-tag the element.
+                let (was_tagged, target_ty) = match target_ty {
+                    Type::ExplicitLiteral(inner) => (true, *inner),
+                    other => (false, other),
+                };
                 if let Type::Array(elem) = target_ty {
                     let key_ty = self.check_expr(key, env)?;
                     if key_ty != Type::Int {
@@ -2419,7 +2430,12 @@ impl TypeChecker {
                             key.span,
                         ));
                     }
-                    return Ok(*elem);
+                    let elem_ty = *elem;
+                    return Ok(if was_tagged {
+                        Type::ExplicitLiteral(Box::new(elem_ty))
+                    } else {
+                        elem_ty
+                    });
                 }
                 Err(Error::new(
                     ErrorKind::Type,
@@ -2513,6 +2529,15 @@ impl TypeChecker {
             }
             ExprKind::Field { target, name } => {
                 let t = self.check_expr(target, env)?;
+                // Field access on `` `Struct{...}` `` preserves the
+                // tag: the surrounding inert literal context
+                // guarantees every field's value was itself
+                // constructed inertly. Unwrap to find the struct,
+                // then re-tag the field type.
+                let (was_tagged, t) = match t {
+                    Type::ExplicitLiteral(inner) => (true, *inner),
+                    other => (false, other),
+                };
                 // Both structs and caps support field access. Caps are
                 // read-only via their fields — no Field-as-lvalue path
                 // exists in the lvalue handler for caps.
@@ -2525,7 +2550,7 @@ impl TypeChecker {
                         target.span,
                     )),
                 };
-                fields
+                let field_ty = fields
                     .iter()
                     .find(|(n, _)| n == name)
                     .map(|(_, ty)| ty.clone())
@@ -2533,7 +2558,12 @@ impl TypeChecker {
                         ErrorKind::Type,
                         format!("no field '{name}'"),
                         expr.span,
-                    ))
+                    ))?;
+                Ok(if was_tagged {
+                    Type::ExplicitLiteral(Box::new(field_ty))
+                } else {
+                    field_ty
+                })
             }
             ExprKind::SetLit(elems) => {
                 if elems.is_empty() {
@@ -2669,6 +2699,24 @@ impl TypeChecker {
                     ));
                 }
                 Ok(Type::Array(Box::new(elem_ty.clone())))
+            }
+            ExprKind::ExplicitLiteral(inner) => {
+                // Type-check the inner expression normally, then
+                // tag the result as sticky `` `T` ``. From here on,
+                // the value will propagate through `Ident` lookups,
+                // field accesses, and array indexes carrying the
+                // tag; computing operators (binary / unary other
+                // than `-<numeric>`) erase it; assignment to a `T`
+                // slot widens; assignment to a `` `T` `` slot
+                // preserves.
+                let inner_ty = self.check_expr(inner, env)?;
+                // Avoid double-wrapping: `` `` `5` ``  `` ` ` (nested
+                // backticks) is the same as a single one.
+                let unwrapped = match inner_ty {
+                    Type::ExplicitLiteral(t) => *t,
+                    t => t,
+                };
+                Ok(Type::ExplicitLiteral(Box::new(unwrapped)))
             }
             ExprKind::Reserve { count, state } => {
                 // The named state slot must be a u64. The count is
@@ -3588,6 +3636,23 @@ fn is_int(t: &Type) -> bool {
 /// are JSON composites and `Type::Json` itself.
 pub fn types_compatible(actual: &Type, expected: &Type) -> bool {
     if actual == expected { return true; }
+    // Sticky explicit-literal rules:
+    //   `T`  →  T     widens (drop the tag)
+    //   T    →  `T`   rejected (must construct via `<expr>`)
+    //   `T`  →  `T`   identity (handled by `actual == expected`,
+    //                 but recursive case for tagged composites)
+    match (actual, expected) {
+        (Type::ExplicitLiteral(a), Type::ExplicitLiteral(e)) => {
+            return types_compatible(a, e);
+        }
+        (Type::ExplicitLiteral(a), e) => {
+            return types_compatible(a, e);
+        }
+        (_, Type::ExplicitLiteral(_)) => {
+            return false;
+        }
+        _ => {}
+    }
     if expected == &Type::Json {
         return matches!(
             actual,
@@ -3605,6 +3670,11 @@ fn check_binop(op: BinOp, l: &Type, r: &Type, span: Span) -> Result<Type, Error>
             span,
         )
     };
+    // Computing operators erase the explicit-literal tag: the
+    // result is a new value, not an inert literal. Unwrap both
+    // operands before the per-op dispatch, then return untagged.
+    let l = l.unwrap_explicit();
+    let r = r.unwrap_explicit();
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
             if l == r && is_int(l) {
@@ -3649,6 +3719,7 @@ fn check_binop(op: BinOp, l: &Type, r: &Type, span: Span) -> Result<Type, Error>
 }
 
 fn check_unop(op: UnOp, v: &Type, span: Span) -> Result<Type, Error> {
+    let v = v.unwrap_explicit();
     match op {
         UnOp::Neg if is_int(v) => Ok(v.clone()),
         UnOp::Not if v == &Type::Bool => Ok(Type::Bool),

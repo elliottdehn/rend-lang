@@ -2198,6 +2198,13 @@ impl<'a> FnCompiler<'a> {
                 self.code.push(Instr::Reserve { dst, state_idx, count_reg });
                 Ok(())
             }
+            ExprKind::ExplicitLiteral(inner) => {
+                // The wrapper is compile-time-only — typeck used it
+                // to attach a sticky tag. At the bytecode level the
+                // inner expression evaluates normally; there's no
+                // runtime representation of the tag.
+                self.compile_expr_into(inner, dst)
+            }
             ExprKind::StructLit { name, fields } => {
                 let shape_idx = *self.struct_index.get(name).ok_or_else(|| {
                     Error::new(

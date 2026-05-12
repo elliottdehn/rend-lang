@@ -351,6 +351,7 @@ fn classify_expr(expr: &Expr, acc: &mut EffectClass, ctx: &Ctx) {
             *acc = acc.join(EffectClass::WriteOnly);
             classify_expr(count, acc, ctx);
         }
+        ExprKind::ExplicitLiteral(inner) => classify_expr(inner, acc, ctx),
         ExprKind::SetLit(elems) => for e in elems { classify_expr(e, acc, ctx); },
         ExprKind::DictLit(pairs) => for (k, v) in pairs {
             classify_expr(k, acc, ctx);

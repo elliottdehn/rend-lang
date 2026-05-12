@@ -1334,6 +1334,7 @@ impl<'a> Interp<'a> {
                 let buf = vec![default; n];
                 Ok(Value::Array(buf))
             }
+            ExprKind::ExplicitLiteral(inner) => self.eval(inner, scopes),
             ExprKind::Reserve { count, state } => {
                 let count_v = self.eval(count, scopes)?;
                 let n = value_to_u64(&count_v).ok_or_else(|| Error::new(

@@ -255,6 +255,9 @@ fn scan_expr(
         ExprKind::Reserve { count, .. } => {
             scan_expr(count, iter_var, states, summaries, found, seen);
         }
+        ExprKind::ExplicitLiteral(inner) => {
+            scan_expr(inner, iter_var, states, summaries, found, seen);
+        }
         ExprKind::DictLit(pairs) => {
             for (k, v) in pairs {
                 scan_expr(k, iter_var, states, summaries, found, seen);
