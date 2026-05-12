@@ -182,22 +182,46 @@
 
 <span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, <span class="t">u64</span>&gt;;   <span class="c">// content → id (HAMT-disjoint per key)</span>
 <span class="k">state</span> reverse: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;   <span class="c">// id → content</span>
+<span class="k">state</span> created: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">u64</span>&gt;;      <span class="c">// id → insert timestamp (ms)</span>
+<span class="k">state</span> ids:     <span class="k">pbtree</span>&lt;<span class="t">u64</span>, <span class="t">u64</span>&gt;;    <span class="c">// sorted-id index for the GC walk</span>
 <span class="k">state</span> next_id: <span class="t">u64</span>;                 <span class="c">// sole intentionally-contended cell</span>
 
 <span class="k">struct</span> InternResult { id: <span class="t">u64</span>, fresh: <span class="t">bool</span> }
 
-<span class="c">// Private helper. One read on a dedup hit; two writes on a miss.</span>
-<span class="c">// The slot is caller-supplied, so this function never contends</span>
-<span class="c">// on `next_id`. `s: `string`` is sticky — any caller must supply</span>
-<span class="c">// a backtick-tagged value or one that flowed through a sticky</span>
-<span class="c">// binding; computed strings are a typeck error.</span>
+<span class="k">const</span> DAY_MS: <span class="t">u64</span> = <span class="n">86400000u64</span>;
+
+<span class="c">// Private helper. One read on a dedup hit; two writes + an</span>
+<span class="c">// opportunistic GC sweep on a miss. The slot is caller-supplied,</span>
+<span class="c">// so this function never contends on `next_id`. `s: `string`` is</span>
+<span class="c">// sticky — any caller must supply a backtick-tagged value;</span>
+<span class="c">// computed strings are a typeck error.</span>
 <span class="k">fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing &gt; <span class="n">0u64</span> {
         <span class="k">return</span> InternResult { id: existing, fresh: <span class="k">false</span> };
     }
+    <span class="k">let</span> now = block_timestamp();
     forward[s] = slot;
     reverse[slot] = s;
+    created[slot] = now;
+    ids[slot] = slot;
+
+    <span class="c">// GC: drop up to 2 stale entries (&gt;24h old), ascending by id.</span>
+    <span class="c">// ids are assigned monotonically, so `created[id]` is non-</span>
+    <span class="c">// decreasing in id — the walk stops at the first non-stale.</span>
+    <span class="k">let</span> cutoff = <span class="k">if</span> now &gt; DAY_MS { now - DAY_MS } <span class="k">else</span> { <span class="n">0u64</span> };
+    <span class="k">let</span> removed = <span class="n">0u64</span>;
+    <span class="k">for</span> old_id <span class="k">in</span> ids {
+        <span class="k">if</span> removed &gt;= <span class="n">2u64</span> { <span class="k">break</span>; }
+        <span class="k">if</span> old_id == slot { <span class="k">break</span>; }
+        <span class="k">if</span> created[old_id] &gt;= cutoff { <span class="k">break</span>; }
+        <span class="k">let</span> old_str = reverse[old_id];
+        <span class="k">delete</span> forward[old_str];
+        <span class="k">delete</span> reverse[old_id];
+        <span class="k">delete</span> created[old_id];
+        <span class="k">delete</span> ids[old_id];
+        removed = removed + <span class="n">1u64</span>;
+    }
     <span class="k">return</span> InternResult { id: slot, fresh: <span class="k">true</span> };
 }
 
@@ -232,11 +256,13 @@
   <h2>The same thing in SQL</h2>
   <p class="subtitle">For comparison: a Postgres / Supabase implementation of the same batch-dedup operation. Schema lives in a migration file; the logic lives in a PL/pgSQL stored procedure; the app calls it via PostgREST RPC.</p>
 
-  <h3 style="margin-top: 28px;">The schema &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— migrations/0001_create_strings.sql</span></h3>
+  <h3 style="margin-top: 28px;">The schema &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— migrations/0001_create_strings.sql + 0002_add_created_at.sql</span></h3>
 <pre><code><span class="k">CREATE TABLE</span> strings (
-    id      <span class="t">BIGSERIAL</span> <span class="k">PRIMARY KEY</span>,
-    content <span class="t">TEXT</span> <span class="k">NOT NULL UNIQUE</span>
+    id          <span class="t">BIGSERIAL</span> <span class="k">PRIMARY KEY</span>,
+    content     <span class="t">TEXT</span> <span class="k">NOT NULL UNIQUE</span>,
+    created_at  <span class="t">TIMESTAMPTZ</span> <span class="k">NOT NULL DEFAULT</span> <span class="k">NOW</span>()
 );
+<span class="k">CREATE INDEX</span> idx_strings_created <span class="k">ON</span> strings (created_at);
 </code></pre>
 
   <h3 style="margin-top: 32px;">The stored procedure &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— database/functions/intern_batch.sql</span></h3>
@@ -247,7 +273,9 @@
     s        <span class="t">TEXT</span>;
     new_id   <span class="t">BIGINT</span>;
     found_id <span class="t">BIGINT</span>;
+    cutoff   <span class="t">TIMESTAMPTZ</span>;
 <span class="k">BEGIN</span>
+    cutoff := <span class="k">NOW</span>() - <span class="k">INTERVAL</span> <span class="s">'24 hours'</span>;
     <span class="k">FOREACH</span> s <span class="k">IN ARRAY</span> inputs <span class="k">LOOP</span>
         <span class="c">-- Try INSERT first. ON CONFLICT DO NOTHING returns no row</span>
         <span class="c">-- on a duplicate, so `new_id` stays NULL — that's the only</span>
@@ -259,7 +287,21 @@
         <span class="k">IF</span> new_id <span class="k">IS NOT NULL</span> <span class="k">THEN</span>
             found_id := new_id;
             fresh := <span class="k">TRUE</span>;
-            new_id := <span class="k">NULL</span>;   <span class="c">-- reset before next iteration</span>
+            new_id := <span class="k">NULL</span>;
+
+            <span class="c">-- GC on each fresh insert: drop up to 2 oldest stale rows.</span>
+            <span class="c">-- Subquery picks the candidates by ascending id; the outer</span>
+            <span class="c">-- DELETE removes them. The unique-on-content INSERT above</span>
+            <span class="c">-- and this DELETE share a row-lock path against the unique</span>
+            <span class="c">-- index — under concurrent batches you'll see lock-ordering</span>
+            <span class="c">-- waits, and the app retries serialization failures.</span>
+            <span class="k">DELETE FROM</span> strings
+            <span class="k">WHERE</span> id <span class="k">IN</span> (
+                <span class="k">SELECT</span> id <span class="k">FROM</span> strings
+                <span class="k">WHERE</span> created_at &lt; cutoff
+                <span class="k">ORDER BY</span> id <span class="k">ASC</span>
+                <span class="k">LIMIT</span> <span class="n">2</span>
+            );
         <span class="k">ELSE</span>
             <span class="c">-- Duplicate — fall back to SELECT to find the existing id.</span>
             <span class="k">SELECT</span> strings.id <span class="k">INTO</span> found_id
@@ -278,6 +320,7 @@ $$;
   <ul style="color: var(--muted); padding-left: 22px; line-height: 1.6;">
     <li><strong style="color: var(--fg);">Decomposition isn't available.</strong> The rend version factors into a private <code>intern_at</code>, a stable <code>entry fn intern_batch</code>, and a one-line <code>main</code>. PL/pgSQL has no module-level public/private distinction; functions can call other functions but doing so commits you to either the subtransaction tax (via <code>EXCEPTION</code>) or the RAISE-aborts-the-caller trap. Real procedures grow into dense monolithic blocks because the language doesn't give you the primitives to split them. The density you see here isn't a presentation choice — it's how the code looks in production.</li>
     <li><strong style="color: var(--fg);">Serial by construction.</strong> The <code>FOREACH</code> loop runs one string at a time. To parallelize you'd call the function from multiple app connections, each with its own transaction — which breaks atomicity across the batch.</li>
+    <li><strong style="color: var(--fg);">The GC and the dedup share lock paths.</strong> The unique-on-content INSERT and the DELETE both touch the strings table's indexes. Two batches running concurrently can deadlock on the same rows even though the writes are logically disjoint; the app sees a serialization-failure exception and retries. The rend version's GC writes (forward / reverse / created / ids) are HAMT/pbtree-disjoint per id, so concurrent GCs of different ids commute under OCC merge with no lock dance.</li>
     <li><strong style="color: var(--fg);">Exception handling has a tax.</strong> Using <code>EXCEPTION WHEN unique_violation</code> instead of the CTE-UNION pattern would allocate a subtransaction per loop iteration. The CTE pattern is the canonical workaround.</li>
     <li><strong style="color: var(--fg);">PL/pgSQL is a DSL bolted onto SQL.</strong> Anemic types, no module system, no real composability, debugging by <code>RAISE NOTICE</code>, tests run inside the database. The surface looks like programming but every property of the tool fights you.</li>
     <li><strong style="color: var(--fg);">Schema lives in migration files.</strong> Every change adds another <code>NNNN_xyz.sql</code> file the codebase carries forever. You can never look at a single file and know what the current schema is — you need external tooling to introspect the live database.</li>
