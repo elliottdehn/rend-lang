@@ -188,10 +188,27 @@ fn main() -> u64 {
     //
     // Result: 2 fills, volume=8.
 
-    submit_buy(alice,  100u64, 10u64);
-    submit_buy(bob,     99u64,  5u64);
-    submit_sell(carol,  98u64,  8u64);
-    submit_sell(dave,  101u64,  7u64);
+    // Submit four orders concurrently. The sequential `submit_buy
+    // / submit_sell` entries each bump `next_id` — calling them
+    // back-to-back inside `parallel { }` would conflict on that
+    // one counter and re-run three of the four. Pre-allocating
+    // the id range serially clears the conflict, after which the
+    // four primary writes hit disjoint pmap keys (alice/bob in
+    // pending_buys, carol/dave in pending_sells) and the shadow
+    // Tx merge runs without re-execution. The compiler's index
+    // maintenance still fires inside each shadow Tx — same back-
+    // link writes as the entry-fn path.
+    let id_a = next_id + 1u64;
+    let id_b = next_id + 2u64;
+    let id_c = next_id + 3u64;
+    let id_d = next_id + 4u64;
+    next_id = id_d;
+    parallel {
+        pending_buys[id_a]  = Order { id: id_a, price: 100u64, qty: 10u64, owner: alice };
+        pending_buys[id_b]  = Order { id: id_b, price:  99u64, qty:  5u64, owner: bob   };
+        pending_sells[id_c] = Order { id: id_c, price:  98u64, qty:  8u64, owner: carol };
+        pending_sells[id_d] = Order { id: id_d, price: 101u64, qty:  7u64, owner: dave  };
+    }
 
     let volume = commit_tick();
 
