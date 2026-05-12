@@ -180,46 +180,44 @@
   <p>Schema, structs, private helpers, and the stable <em>entry</em> functions that form the module's API. Lives in source; the runtime ledger tracks what's actually deployed.</p>
 <pre><code><span class="k">module</span> strdedup;
 
-<span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, <span class="t">u64</span>&gt;;   <span class="c">// content → id (HAMT-disjoint per key)</span>
-<span class="k">state</span> reverse: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;   <span class="c">// id → content</span>
-<span class="k">state</span> created: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">u64</span>&gt;;      <span class="c">// id → insert timestamp (ms)</span>
-<span class="k">state</span> ids:     <span class="k">pbtree</span>&lt;<span class="t">u64</span>, <span class="t">u64</span>&gt;;    <span class="c">// sorted-id index for the GC walk</span>
-<span class="k">state</span> next_id: <span class="t">u64</span>;                 <span class="c">// sole intentionally-contended cell</span>
+<span class="k">struct</span> Entry { id: <span class="t">u64</span>, created: <span class="t">u64</span> }
+
+<span class="k">state</span> forward: <span class="k">pmap</span>&lt;<span class="t">string</span>, Entry&gt;;       <span class="c">// content → Entry (HAMT-disjoint per key)</span>
+<span class="k">state</span> by_id:   <span class="k">pbtree</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;      <span class="c">// id → content, sorted (for GC walk)</span>
+<span class="k">state</span> next_id: <span class="t">u64</span>;                     <span class="c">// sole intentionally-contended cell</span>
+
+<span class="k">unique_index</span> by_id <span class="k">on</span> forward.(id <span class="k">ASC</span>);  <span class="c">// auto-maintained on forward writes</span>
 
 <span class="k">struct</span> InternResult { id: <span class="t">u64</span>, fresh: <span class="t">bool</span> }
 
 <span class="k">const</span> DAY_MS: <span class="t">u64</span> = <span class="n">86400000u64</span>;
 
-<span class="c">// Private helper. One read on a dedup hit; two writes + an</span>
+<span class="c">// Private helper. One read on a dedup hit; one write + an</span>
 <span class="c">// opportunistic GC sweep on a miss. The slot is caller-supplied,</span>
 <span class="c">// so this function never contends on `next_id`. `s: `string`` is</span>
 <span class="c">// sticky — any caller must supply a backtick-tagged value;</span>
 <span class="c">// computed strings are a typeck error.</span>
 <span class="k">fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
     <span class="k">let</span> existing = forward[s];
-    <span class="k">if</span> existing &gt; <span class="n">0u64</span> {
-        <span class="k">return</span> InternResult { id: existing, fresh: <span class="k">false</span> };
+    <span class="k">if</span> existing.id &gt; <span class="n">0u64</span> {
+        <span class="k">return</span> InternResult { id: existing.id, fresh: <span class="k">false</span> };
     }
     <span class="k">let</span> now = block_timestamp();
-    forward[s] = slot;
-    reverse[slot] = s;
-    created[slot] = now;
-    ids[slot] = slot;
+    forward[s] = Entry { id: slot, created: now };
 
     <span class="c">// GC: drop up to 2 stale entries (&gt;24h old), ascending by id.</span>
-    <span class="c">// ids are assigned monotonically, so `created[id]` is non-</span>
-    <span class="c">// decreasing in id — the walk stops at the first non-stale.</span>
+    <span class="c">// Walking `by_id` yields content strings in id order; deleting</span>
+    <span class="c">// from `forward` auto-removes the corresponding index back-link.</span>
+    <span class="c">// ids are assigned monotonically, so `created` is non-decreasing</span>
+    <span class="c">// in id — the walk stops at the first non-stale entry.</span>
     <span class="k">let</span> cutoff = <span class="k">if</span> now &gt; DAY_MS { now - DAY_MS } <span class="k">else</span> { <span class="n">0u64</span> };
     <span class="k">let</span> removed = <span class="n">0u64</span>;
-    <span class="k">for</span> old_id <span class="k">in</span> ids {
+    <span class="k">for</span> old_content <span class="k">in</span> by_id {
         <span class="k">if</span> removed &gt;= <span class="n">2u64</span> { <span class="k">break</span>; }
-        <span class="k">if</span> old_id == slot { <span class="k">break</span>; }
-        <span class="k">if</span> created[old_id] &gt;= cutoff { <span class="k">break</span>; }
-        <span class="k">let</span> old_str = reverse[old_id];
-        <span class="k">delete</span> forward[old_str];
-        <span class="k">delete</span> reverse[old_id];
-        <span class="k">delete</span> created[old_id];
-        <span class="k">delete</span> ids[old_id];
+        <span class="k">let</span> e = forward[old_content];
+        <span class="k">if</span> e.id == slot { <span class="k">break</span>; }
+        <span class="k">if</span> e.created &gt;= cutoff { <span class="k">break</span>; }
+        <span class="k">delete</span> forward[old_content];
         removed = removed + <span class="n">1u64</span>;
     }
     <span class="k">return</span> InternResult { id: slot, fresh: <span class="k">true</span> };
