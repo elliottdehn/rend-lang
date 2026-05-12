@@ -216,6 +216,33 @@ fn reserve_atomically_bumps_state_and_yields_consecutive_ids() {
 }
 
 #[test]
+fn reserve_count_is_an_arbitrary_int_expression() {
+    // The count is a runtime int_expr, not a literal. Confirms the
+    // VM's Reserve opcode reads count_reg at dispatch time rather
+    // than baking the value at compile time.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r"
+        module rs;
+        state counter: u64;
+        entry fn how_many() -> u64 { return 4u64; }
+        fn main() -> u64 {
+            let n   = how_many();
+            let ids = reserve n from counter;
+            let buf = arr<u64>[n];
+            parallel for id in ids to buf {
+                id * 100u64
+            }
+            // ids = [1,2,3,4]; buf = [100,200,300,400].
+            return buf[0i64] + buf[1i64] + buf[2i64] + buf[3i64]
+                 + counter;
+        }
+    ";
+    // 1000 + 4 = 1004
+    let out = Engine::new().execute(src, Fuel::new(20_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(1004));
+}
+
+#[test]
 fn reserve_rejects_non_u64_state() {
     let kv = rend::kv::InMemoryKv::new();
     let src = r"
