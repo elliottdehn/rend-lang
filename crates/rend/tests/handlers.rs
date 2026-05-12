@@ -162,6 +162,101 @@ fn handlers_log_to_the_outcome_events_alongside_their_side_effects() {
     assert_eq!(out.events[1].name, "Foo");
 }
 
+// ---------- cross-module handlers ----------
+
+#[test]
+fn handler_in_module_a_fires_on_emit_from_module_m() {
+    use std::collections::HashMap;
+    let mut sources = HashMap::new();
+    sources.insert(
+        "ledger".into(),
+        "
+            pub struct Credited { user: i64, amount: i64 }
+            entry fn credit(user: i64, amount: i64) -> i64 {
+                emit Credited { user: user, amount: amount };
+                return 0;
+            }
+        "
+        .to_string(),
+    );
+    sources.insert(
+        "auditor".into(),
+        "
+            state count: i64;
+            on ledger::Credited fn track(c: ledger::Credited) {
+                count = count + c.amount;
+            }
+            entry view fn total() -> i64 { return count; }
+        "
+        .to_string(),
+    );
+    sources.insert(
+        "main".into(),
+        "
+            fn main() -> i64 {
+                ledger::credit(1, 10);
+                ledger::credit(2, 25);
+                return auditor::total();
+            }
+        "
+        .to_string(),
+    );
+    let kv = rend::kv::InMemoryKv::new();
+    let out = Engine::new()
+        .execute_main(&sources, "main", Fuel::new(50_000), &kv)
+        .unwrap();
+    assert_eq!(out.result, Value::int(35i64));
+}
+
+#[test]
+fn non_pub_struct_cannot_be_referenced_cross_module() {
+    use std::collections::HashMap;
+    let mut sources = HashMap::new();
+    sources.insert(
+        "ledger".into(),
+        "
+            struct Credited { user: i64, amount: i64 }
+            entry fn credit(user: i64, amount: i64) -> i64 {
+                emit Credited { user: user, amount: amount };
+                return 0;
+            }
+        "
+        .to_string(),
+    );
+    sources.insert(
+        "auditor".into(),
+        "
+            state count: i64;
+            on ledger::Credited fn track(c: ledger::Credited) {
+                count = count + c.amount;
+            }
+            entry view fn total() -> i64 { return count; }
+        "
+        .to_string(),
+    );
+    sources.insert(
+        "main".into(),
+        "
+            fn main() -> i64 {
+                ledger::credit(1, 10);
+                return auditor::total();
+            }
+        "
+        .to_string(),
+    );
+    let kv = rend::kv::InMemoryKv::new();
+    let err = Engine::new()
+        .execute_main(&sources, "main", Fuel::new(50_000), &kv)
+        .unwrap_err();
+    // Without `pub`, `ledger::Credited` is private — the auditor
+    // module's `on ledger::Credited` reference fails to resolve.
+    assert!(
+        err.to_string().to_lowercase().contains("credited")
+            || err.to_string().to_lowercase().contains("unknown"),
+        "expected unknown-struct error, got: {err}",
+    );
+}
+
 #[test]
 fn cyclic_handler_chain_terminates_via_fuel() {
     // A → emit B → handler emits A → handler emits B → ...

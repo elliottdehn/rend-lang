@@ -129,9 +129,12 @@ pub struct StructDecl {
 /// whose type is the event struct; typeck enforces the shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandlerDecl {
-    /// The struct name this handler listens for. Bare `Foo` means
-    /// "the local `Foo`"; `m::Foo` (future cross-module slice) means
-    /// module `m`'s `Foo`. Today only the bare form is parsed.
+    /// `None` for local handlers (`on Foo fn ...`), `Some(m)` for
+    /// cross-module handlers (`on m::Foo fn ...`). Combined with
+    /// `event_type` to form the dispatch key.
+    pub event_module: Option<String>,
+    /// Bare struct name (no module prefix). Identifies the event
+    /// type within `event_module`.
     pub event_type: String,
     pub fn_def: FnDef,
     pub span: Span,

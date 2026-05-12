@@ -163,10 +163,13 @@ pub fn compile_named_with_extras(
             &indexes_by_primary,
         )?);
     }
-    // Build dispatch table: event struct name → declaration-ordered
-    // list of handler fn indices. The handlers' fn_defs already
-    // exist in `bc_fns` (the parser merged them into
-    // `module.functions`), so we just resolve each by name.
+    // Build dispatch table: fully-qualified `module::struct` →
+    // declaration-ordered list of handler fn indices. Local handlers
+    // (`on Foo fn ...`) key under the *current* module; cross-module
+    // handlers (`on m::Foo fn ...`) key under the foreign module.
+    // The runtime forms its lookup key from the emitter's module
+    // plus the emitted struct name, so both forms match the same
+    // canonical key.
     let mut handler_dispatch: HashMap<String, Vec<u16>> = HashMap::new();
     for h in &module.handlers {
         let idx = *fn_index.get(&h.fn_def.name).ok_or_else(|| Error::new(
@@ -174,10 +177,9 @@ pub fn compile_named_with_extras(
             format!("handler '{}' missing from fn index (internal)", h.fn_def.name),
             h.span,
         ))?;
-        handler_dispatch
-            .entry(h.event_type.clone())
-            .or_default()
-            .push(idx as u16);
+        let target_module = h.event_module.clone().unwrap_or_else(|| module_name.to_string());
+        let key = format!("{target_module}::{}", h.event_type);
+        handler_dispatch.entry(key).or_default().push(idx as u16);
     }
     let interfaces = module.interfaces.clone();
     let interface_index = interfaces

@@ -29,12 +29,19 @@ fn normalize_groups(groups: Vec<Option<String>>) -> Vec<Option<String>> {
     }
 }
 
+/// Cross-module struct catalog: keyed by `"module::name"`, value is
+/// `(fields, field_groups, is_pub)`. Built in the multi-module
+/// pipeline (`Engine::execute_main`) from every parsed module and
+/// handed to typeck so `m::T` references can resolve their fields
+/// and visibility from outside the local module.
+pub type CrossModuleStructs = HashMap<String, (Vec<(String, Type)>, Vec<Option<String>>, bool)>;
+
 /// Walk the module and replace every unresolved `Type::Struct { name, fields: [] }`
 /// with a fully-populated `Type::Struct { name, fields: ... }` taken from the
 /// matching declaration. Struct decls are processed in declaration order,
 /// so each may reference structs declared before it. Cycles are detected.
 pub fn resolve_types(module: &mut Module) -> Result<(), Error> {
-    resolve_types_with_iface_externals(module, &HashMap::new())
+    resolve_types_with_externals(module, &HashMap::new(), &HashMap::new())
 }
 
 /// Same as `resolve_types`, but also populates the iface map
@@ -45,9 +52,30 @@ pub fn resolve_types_with_iface_externals(
     module: &mut Module,
     iface_externals: &HashMap<String, Vec<crate::ast::InterfaceMethodSig>>,
 ) -> Result<(), Error> {
+    resolve_types_with_externals(module, &HashMap::new(), iface_externals)
+}
+
+/// Same as `resolve_types_with_iface_externals`, but also takes a
+/// cross-module struct table so qualified `m::T` references resolve.
+pub fn resolve_types_with_externals(
+    module: &mut Module,
+    cross_structs: &CrossModuleStructs,
+    iface_externals: &HashMap<String, Vec<crate::ast::InterfaceMethodSig>>,
+) -> Result<(), Error> {
     use std::collections::HashMap;
     let owner_module = module.name.clone().unwrap_or_else(|| "main".to_string());
     let mut struct_map: HashMap<String, StructInfo> = HashMap::new();
+    // Pre-load cross-module `pub` structs under their fully
+    // qualified `module::name` key. The parser lowers
+    // `m::T` references as `Type::Struct.name = "m::T"`, so the
+    // existing struct-name lookup picks them up without further
+    // plumbing. Private structs are filtered out here — that's
+    // the `pub` enforcement boundary.
+    for (qname, (fields, groups, is_pub)) in cross_structs {
+        if *is_pub {
+            struct_map.insert(qname.clone(), (fields.clone(), groups.clone()));
+        }
+    }
     for decl in module.structs.iter_mut() {
         let mut resolved = Vec::with_capacity(decl.fields.len());
         let mut groups = Vec::with_capacity(decl.fields.len());
@@ -1122,12 +1150,19 @@ fn check_inner(
                 ));
             }
         };
-        if event_struct_name != h.event_type {
+        // Compare the qualified `on` clause against the qualified
+        // parameter type. Local handlers see a bare name on both
+        // sides; cross-module handlers see `m::T` on both sides.
+        let expected_qualified = match &h.event_module {
+            Some(m) => format!("{m}::{}", h.event_type),
+            None => h.event_type.clone(),
+        };
+        if event_struct_name != expected_qualified {
             return Err(Error::new(
                 ErrorKind::Type,
                 format!(
                     "handler '{}' on '{}': parameter type '{}' must match the event type",
-                    h.fn_def.name, h.event_type, event_struct_name,
+                    h.fn_def.name, expected_qualified, event_struct_name,
                 ),
                 resolved.params[0].span,
             ));

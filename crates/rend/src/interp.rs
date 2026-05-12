@@ -581,15 +581,28 @@ impl<'a> Interp<'a> {
                     args,
                 });
                 // Dispatch handlers bound to this struct type in
-                // declaration order. Handlers recurse through the
-                // same Stmt::Emit if they emit more events, so
-                // chains and cycles fall out naturally (cycles end
-                // when fuel runs out).
+                // declaration order. The interp is single-module:
+                // only handlers whose `event_module` is `None` (or
+                // matches the current module name) fire. Handlers
+                // recurse through the same Stmt::Emit if they emit
+                // more events, so chains and cycles fall out
+                // naturally (cycles end when fuel runs out).
+                let emit_module = self
+                    .module
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string());
                 let handler_names: Vec<String> = self
                     .module
                     .handlers
                     .iter()
-                    .filter(|h| h.event_type == struct_name)
+                    .filter(|h| {
+                        h.event_type == struct_name
+                            && h.event_module
+                                .as_deref()
+                                .map(|m| m == emit_module)
+                                .unwrap_or(true)
+                    })
                     .map(|h| h.fn_def.name.clone())
                     .collect();
                 for hname in handler_names {

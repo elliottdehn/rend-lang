@@ -304,16 +304,25 @@ impl Parser {
         Ok(ModifierDecl { name, params, body, span: Span { start, end } })
     }
 
-    /// `on TypeName fn handler(p: TypeName) { body }` — event
-    /// handler binding. Compiles to a regular `FnDef` plus a
-    /// pointer back to the event struct it listens for.
+    /// `on TypeName fn handler(p: TypeName) { body }` — local event
+    /// handler binding. The cross-module form is `on m::TypeName fn
+    /// ...` — fires when module `m` emits a `TypeName`.
     fn parse_handler_decl(&mut self) -> Result<HandlerDecl, Error> {
         let start = self.cur_span().start;
         self.expect(Token::On, "expected 'on'")?;
-        let event_type = self.expect_ident()?;
+        // Either `Type` (local) or `module::Type` (cross-module).
+        let first = self.expect_ident()?;
+        let (event_module, event_type) = if self.peek_is(&Token::ColonColon) {
+            self.advance();
+            let ty = self.expect_ident()?;
+            (Some(first), ty)
+        } else {
+            (None, first)
+        };
         let fn_def = self.parse_fn()?;
         let end = fn_def.span.end;
         Ok(HandlerDecl {
+            event_module,
             event_type,
             fn_def,
             span: Span { start, end },
@@ -639,6 +648,20 @@ impl Parser {
             }
             Token::Ident(s) => {
                 self.advance();
+                // Cross-module struct reference: `m::T`. Lower the
+                // qualified name into the `Type::Struct.name` field
+                // as `m::T` and let typeck resolve it against the
+                // foreign module's struct table (checking `pub`).
+                if self.peek_is(&Token::ColonColon) {
+                    self.advance();
+                    let tname = self.expect_ident()?;
+                    let qualified = format!("{s}::{tname}");
+                    return Ok(Type::Struct {
+                        name: qualified,
+                        fields: Vec::new(),
+                        field_groups: Vec::new(),
+                    });
+                }
                 match s.as_str() {
                     "i64" | "int" => Ok(Type::Int),
                     "uint" => Ok(Type::UInt),

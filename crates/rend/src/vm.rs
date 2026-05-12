@@ -801,25 +801,37 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             Span::default(),
                         )),
                     };
+                    let emit_module = module.name.clone();
                     let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
                     self.tx.emit(crate::tx::EmittedEvent {
-                        module: module.name.clone(),
+                        module: emit_module.clone(),
                         name: struct_name.clone(),
                         args,
                     });
-                    // Dispatch every handler bound to this struct.
-                    // Handlers run inline in stable declaration order;
-                    // any emits they make recurse through this same
-                    // instruction, so chains and cycles fall out
-                    // naturally (cycles are bounded by fuel).
-                    let handlers = module
-                        .handler_dispatch
-                        .get(&struct_name)
-                        .cloned()
-                        .unwrap_or_default();
-                    for h_idx in handlers {
+                    // Dispatch: every loaded module's
+                    // `handler_dispatch` is keyed by
+                    // `"<emitter>::<struct>"`, so a single canonical
+                    // lookup picks up both the emitter's own local
+                    // handlers and any cross-module `on m::T fn ...`
+                    // handlers bound to the same identity. Each
+                    // module runs its matching handlers in
+                    // declaration order; the order across modules
+                    // is the engine's module-load order.
+                    let key = format!("{emit_module}::{struct_name}");
+                    // Collect (target_module_idx, handler_fn_idx)
+                    // pairs before we start calling, since `self.call`
+                    // borrows `self` mutably.
+                    let mut dispatch: Vec<(usize, u16)> = Vec::new();
+                    for (mi, m) in self.modules.iter().enumerate() {
+                        if let Some(idxs) = m.handler_dispatch.get(&key) {
+                            for h_idx in idxs {
+                                dispatch.push((mi, *h_idx));
+                            }
+                        }
+                    }
+                    for (target_mi, h_idx) in dispatch {
                         let _ = self.call(
-                            module_idx,
+                            target_mi,
                             h_idx as usize,
                             &[struct_val.clone()],
                         )?;

@@ -191,8 +191,10 @@ impl Engine {
         fuel: vm::Fuel,
         kv: &dyn Kv,
     ) -> Result<ExecOutcome, Error> {
-        // Phase 1: parse + resolve types per module. A `module <name>;`
-        // declaration, if present, must agree with the caller-provided key.
+        // Phase 1a: parse + expand modifiers per module. Resolution
+        // is deferred so we can build a cross-module struct catalog
+        // first — that lets `m::T` references in any module find
+        // their `pub` foreign struct decl.
         let mut parsed: Vec<(String, crate::ast::Module)> =
             Vec::with_capacity(sources.len());
         for (name, src) in sources {
@@ -210,8 +212,39 @@ impl Engine {
                 }
             }
             crate::modifier::expand(&mut m)?;
-            typeck::resolve_types(&mut m)?;
             parsed.push((name.clone(), m));
+        }
+        // Phase 1b: catalog every module's struct decls (fields
+        // intentionally taken pre-resolution — they may still hold
+        // unresolved local-struct references, which is fine because
+        // each module re-runs the full resolve pass below).
+        let mut cross_structs: crate::typeck::CrossModuleStructs =
+            std::collections::HashMap::new();
+        for (mod_name, m) in &parsed {
+            for s in &m.structs {
+                let fields: Vec<(String, crate::ast::Type)> = s
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                let groups: Vec<Option<String>> =
+                    s.fields.iter().map(|f| f.group.clone()).collect();
+                cross_structs.insert(
+                    format!("{mod_name}::{}", s.name),
+                    (fields, groups, s.is_pub),
+                );
+            }
+        }
+        // Phase 1c: per-module type resolution with cross-module
+        // visibility. `m::T` lookups go through `cross_structs`
+        // (which has already filtered out non-`pub` entries via the
+        // resolver itself).
+        for (_, m) in parsed.iter_mut() {
+            crate::typeck::resolve_types_with_externals(
+                m,
+                &cross_structs,
+                &std::collections::HashMap::new(),
+            )?;
         }
 
         // Phase 2: collect cross-module entry signatures into one manifest.
