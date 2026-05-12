@@ -14,24 +14,37 @@
 //!     addressed cells) — Postgres jsonb canonicalizes by sorting
 //!     keys; we don't, which keeps round-trips structurally equal.
 //!
-//! Numeric handling: JSON has one numeric kind. We split into
-//! `Int(i64)` for negative or sign-bearing integers and `U64` for
-//! non-negative integers wider than i64. Floats are not modeled —
-//! rend has no float type. A JSON value carrying a fractional
-//! number fails to parse.
+//! Numeric handling: every leaf JSON value is supported.
+//!   * `Int` carries a `BigInt` — arbitrary precision, no
+//!     overflow at parse time, no upper bound. A 2048-bit ledger
+//!     balance is the same shape as `42`.
+//!   * `Float` carries an `f64`. A JSON literal with `.`, `e`, or
+//!     `E` parses to a Float; integer literals are never
+//!     widened to Float. The conversion from Float back to a
+//!     rend `Int` / `U64` errors if precision would be lost.
 //!
 //! "Buyer beware" semantics throughout: missing keys / wrong shapes
 //! yield `Json::Null` or runtime errors at conversion sites. There
 //! is no static schema check; the type is intentionally dynamic.
 
+use num_bigint::BigInt;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Json {
     Null,
     Bool(bool),
-    Int(i64),
-    U64(u64),
+    /// Arbitrary-precision signed integer. JSON's "number" without a
+    /// fractional or exponent part parses here; rend tx code carries
+    /// values 2048+ bits wide if the contract asked for it.
+    Int(BigInt),
+    /// IEEE-754 double. JSON's "number" with `.`/`e`/`E` parses here.
+    /// We store the value rather than the originating string, so two
+    /// floats that round-trip to the same bit pattern compare equal.
+    /// `f64` doesn't implement `Eq`, so we hand-roll the `PartialEq`
+    /// impl below to keep `Json: Eq` (tests want it; bitwise compare
+    /// is fine here because NaN never appears from the JSON path).
+    Float(F64Bits),
     Str(String),
     Array(Vec<Json>),
     /// Object: insertion-order-preserving key/value list. Linear key
@@ -39,6 +52,24 @@ pub enum Json {
     /// map representation later if profiling demands it.
     Object(Vec<(String, Json)>),
 }
+
+/// `f64` wrapper that compares by bit pattern. Lets `Json` remain
+/// `Eq`. NaN compares equal to NaN here, which is intentional for
+/// the structural-equality use cases we have (content-addressed
+/// cells, test assertions); arithmetic users should `to_f64()`.
+#[derive(Debug, Clone, Copy)]
+pub struct F64Bits(pub f64);
+
+impl F64Bits {
+    pub fn to_f64(self) -> f64 { self.0 }
+}
+
+impl PartialEq for F64Bits {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+impl Eq for F64Bits {}
 
 impl Json {
     /// Object key access. Missing key → `None`. Non-object → `None`.
@@ -74,7 +105,28 @@ fn write_canonical(j: &Json, out: &mut String) {
         Json::Null => out.push_str("null"),
         Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Json::Int(n) => out.push_str(&n.to_string()),
-        Json::U64(n) => out.push_str(&n.to_string()),
+        Json::Float(F64Bits(n)) => {
+            // JSON spec doesn't admit NaN / ±Inf. Render them as
+            // `null` so the output stays valid JSON; callers that
+            // need stricter behavior should validate before
+            // serializing.
+            if n.is_finite() {
+                // Use a representation that distinguishes integers
+                // from floats — JSON parsers wouldn't, but we want
+                // a round-trip Float → text → Float to land back as
+                // Float, not Int. Append ".0" if there's no
+                // fractional/exponent part.
+                let s = format!("{}", n);
+                if s.contains('.') || s.contains('e') || s.contains('E') {
+                    out.push_str(&s);
+                } else {
+                    out.push_str(&s);
+                    out.push_str(".0");
+                }
+            } else {
+                out.push_str("null");
+            }
+        }
         Json::Str(s) => write_string(s, out),
         Json::Array(items) => {
             out.push('[');
@@ -326,23 +378,43 @@ impl<'a> Parser<'a> {
         if int_start == self.pos {
             return Err(self.err("expected digits"));
         }
-        // Reject fractional numbers — rend has no float type.
-        if matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E')) {
-            return Err(self.err(
-                "JSON numbers with fractional or exponent parts are not supported (rend has no float type)"
-            ));
+        // Fractional or exponent part → parse as Float. Integer-only
+        // literals parse as arbitrary-precision Int with no size cap.
+        let mut is_float = false;
+        if self.peek() == Some(b'.') {
+            is_float = true;
+            self.advance();
+            let frac_start = self.pos;
+            while let Some(b) = self.peek() {
+                if b.is_ascii_digit() { self.advance(); } else { break; }
+            }
+            if frac_start == self.pos {
+                return Err(self.err("expected digits after '.'"));
+            }
+        }
+        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            is_float = true;
+            self.advance();
+            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                self.advance();
+            }
+            let exp_start = self.pos;
+            while let Some(b) = self.peek() {
+                if b.is_ascii_digit() { self.advance(); } else { break; }
+            }
+            if exp_start == self.pos {
+                return Err(self.err("expected digits in exponent"));
+            }
         }
         let s = std::str::from_utf8(&self.bytes[start..self.pos])
-            .map_err(|_| self.err("invalid digits"))?;
-        if let Ok(n) = s.parse::<i64>() {
-            Ok(Json::Int(n))
-        } else if !s.starts_with('-') {
-            // Too big for i64 but might fit u64.
-            s.parse::<u64>()
-                .map(Json::U64)
-                .map_err(|_| self.err("integer literal out of u64 range"))
+            .map_err(|_| self.err("invalid number"))?;
+        if is_float {
+            let f: f64 = s.parse().map_err(|_| self.err("invalid float literal"))?;
+            Ok(Json::Float(F64Bits(f)))
         } else {
-            Err(self.err("integer literal out of i64 range"))
+            let n: BigInt = s.parse()
+                .map_err(|_| self.err("invalid integer literal"))?;
+            Ok(Json::Int(n))
         }
     }
 }
@@ -356,15 +428,29 @@ fn utf8_len(first: u8) -> usize {
 }
 
 // ---------- binary serialization (state cells) ----------
+//
+// Tag scheme:
+//   0x01 NULL
+//   0x02 TRUE
+//   0x03 FALSE
+//   0x04 INT      — u32 byte-length, then signed-BE bytes (BigInt)
+//   0x05 U64      — legacy fixed 8 BE bytes; readable for back-compat,
+//                   not produced by the writer anymore. New data uses
+//                   the variable-length INT.
+//   0x06 STR
+//   0x07 ARRAY
+//   0x08 OBJECT
+//   0x09 FLOAT    — 8 BE bytes (IEEE-754 double)
 
-const TAG_NULL:   u8 = 0x01;
-const TAG_TRUE:   u8 = 0x02;
-const TAG_FALSE:  u8 = 0x03;
-const TAG_INT:    u8 = 0x04;
-const TAG_U64:    u8 = 0x05;
-const TAG_STR:    u8 = 0x06;
-const TAG_ARRAY:  u8 = 0x07;
-const TAG_OBJECT: u8 = 0x08;
+const TAG_NULL:        u8 = 0x01;
+const TAG_TRUE:        u8 = 0x02;
+const TAG_FALSE:       u8 = 0x03;
+const TAG_INT:         u8 = 0x04;
+const TAG_U64_LEGACY:  u8 = 0x05;
+const TAG_STR:         u8 = 0x06;
+const TAG_ARRAY:       u8 = 0x07;
+const TAG_OBJECT:      u8 = 0x08;
+const TAG_FLOAT:       u8 = 0x09;
 
 pub fn serialize(j: &Json) -> Vec<u8> {
     let mut out = Vec::new();
@@ -374,12 +460,20 @@ pub fn serialize(j: &Json) -> Vec<u8> {
 
 fn write_node(j: &Json, out: &mut Vec<u8>) {
     match j {
-        Json::Null     => out.push(TAG_NULL),
+        Json::Null        => out.push(TAG_NULL),
         Json::Bool(true)  => out.push(TAG_TRUE),
         Json::Bool(false) => out.push(TAG_FALSE),
-        Json::Int(n)   => { out.push(TAG_INT); out.extend_from_slice(&n.to_be_bytes()); }
-        Json::U64(n)   => { out.push(TAG_U64); out.extend_from_slice(&n.to_be_bytes()); }
-        Json::Str(s)   => {
+        Json::Int(n) => {
+            out.push(TAG_INT);
+            let bytes = n.to_signed_bytes_be();
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            out.extend_from_slice(&bytes);
+        }
+        Json::Float(F64Bits(n)) => {
+            out.push(TAG_FLOAT);
+            out.extend_from_slice(&n.to_be_bytes());
+        }
+        Json::Str(s) => {
             out.push(TAG_STR);
             out.extend_from_slice(&(s.len() as u32).to_be_bytes());
             out.extend_from_slice(s.as_bytes());
@@ -417,7 +511,11 @@ impl<'a> Reader<'a> {
         let tag = self.read_byte()?;
         match tag {
             TAG_NULL | TAG_TRUE | TAG_FALSE => {}
-            TAG_INT | TAG_U64 => { self.pos += 8; }
+            TAG_INT => {
+                let n = self.read_u32()? as usize;
+                self.pos += n;
+            }
+            TAG_U64_LEGACY | TAG_FLOAT => { self.pos += 8; }
             TAG_STR => {
                 let n = self.read_u32()? as usize;
                 self.pos += n;
@@ -474,15 +572,23 @@ impl<'a> Reader<'a> {
             TAG_NULL  => Json::Null,
             TAG_TRUE  => Json::Bool(true),
             TAG_FALSE => Json::Bool(false),
-            TAG_INT   => {
-                let arr: [u8; 8] = self.bytes.get(self.pos..self.pos + 8)?.try_into().ok()?;
-                self.pos += 8;
-                Json::Int(i64::from_be_bytes(arr))
+            TAG_INT => {
+                let n = self.read_u32()? as usize;
+                let raw = self.bytes.get(self.pos..self.pos + n)?;
+                self.pos += n;
+                Json::Int(BigInt::from_signed_bytes_be(raw))
             }
-            TAG_U64 => {
+            TAG_U64_LEGACY => {
+                // Back-compat: old encoding for non-negative integers
+                // wider than i64. Read as u64 and lift to BigInt.
                 let arr: [u8; 8] = self.bytes.get(self.pos..self.pos + 8)?.try_into().ok()?;
                 self.pos += 8;
-                Json::U64(u64::from_be_bytes(arr))
+                Json::Int(BigInt::from(u64::from_be_bytes(arr)))
+            }
+            TAG_FLOAT => {
+                let arr: [u8; 8] = self.bytes.get(self.pos..self.pos + 8)?.try_into().ok()?;
+                self.pos += 8;
+                Json::Float(F64Bits(f64::from_be_bytes(arr)))
             }
             TAG_STR => {
                 let n = self.read_u32()? as usize;
@@ -514,26 +620,28 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
+    fn ji(n: i64) -> Json { Json::Int(BigInt::from(n)) }
+
     #[test]
     fn parse_primitives() {
         assert_eq!(parse("null").unwrap(), Json::Null);
         assert_eq!(parse("true").unwrap(), Json::Bool(true));
         assert_eq!(parse("false").unwrap(), Json::Bool(false));
-        assert_eq!(parse("42").unwrap(), Json::Int(42));
-        assert_eq!(parse("-7").unwrap(), Json::Int(-7));
-        assert_eq!(parse("18446744073709551615").unwrap(), Json::U64(u64::MAX));
+        assert_eq!(parse("42").unwrap(), ji(42));
+        assert_eq!(parse("-7").unwrap(), ji(-7));
+        assert_eq!(parse("18446744073709551615").unwrap(), Json::Int(BigInt::from(u64::MAX)));
         assert_eq!(parse("\"hello\"").unwrap(), Json::Str("hello".into()));
     }
 
     #[test]
     fn parse_array_and_object() {
         let v = parse("[1, 2, 3]").unwrap();
-        assert_eq!(v, Json::Array(vec![Json::Int(1), Json::Int(2), Json::Int(3)]));
+        assert_eq!(v, Json::Array(vec![ji(1), ji(2), ji(3)]));
 
         let v = parse(r#"{"name": "alice", "age": 30}"#).unwrap();
         assert_eq!(v, Json::Object(vec![
             ("name".into(), Json::Str("alice".into())),
-            ("age".into(), Json::Int(30)),
+            ("age".into(), ji(30)),
         ]));
     }
 
@@ -546,9 +654,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_floats() {
-        assert!(parse("1.5").is_err());
-        assert!(parse("1e10").is_err());
+    fn parse_floats() {
+        assert_eq!(parse("1.5").unwrap(), Json::Float(F64Bits(1.5)));
+        assert_eq!(parse("-0.25").unwrap(), Json::Float(F64Bits(-0.25)));
+        assert_eq!(parse("1e10").unwrap(), Json::Float(F64Bits(1e10)));
+        assert_eq!(parse("1.5e-3").unwrap(), Json::Float(F64Bits(1.5e-3)));
+        // Integer literals never widen to Float, even when huge.
+        assert!(matches!(parse("1000000").unwrap(), Json::Int(_)));
+    }
+
+    #[test]
+    fn parse_arbitrary_precision_ints() {
+        // 200 bits — beyond u128 / i256.
+        let huge = "1606938044258990275541962092341162602522202993782792835301375";
+        match parse(huge).unwrap() {
+            Json::Int(n) => assert_eq!(n.to_string(), huge),
+            other => panic!("expected Int, got {other:?}"),
+        }
+        // Negative too.
+        let neg = format!("-{huge}");
+        match parse(&neg).unwrap() {
+            Json::Int(n) => assert_eq!(n.to_string(), neg),
+            other => panic!("expected Int, got {other:?}"),
+        }
     }
 
     #[test]
@@ -560,15 +688,44 @@ mod tests {
 
     #[test]
     fn serialize_round_trip() {
-        let v = parse(r#"{"name": "alice", "tags": ["a", "b"], "n": 42}"#).unwrap();
+        let v = parse(r#"{"name": "alice", "tags": ["a", "b"], "n": 42, "pi": 3.14}"#).unwrap();
         let bytes = serialize(&v);
         let v2 = deserialize(&bytes).unwrap();
         assert_eq!(v, v2);
     }
 
     #[test]
+    fn serialize_round_trip_bigint() {
+        // Make sure the variable-length INT encoding survives the
+        // bytes round-trip at multiple sizes (1, 8, 32, and 128 bytes
+        // of magnitude).
+        for shift in [0u32, 60, 250, 1000] {
+            let n: BigInt = BigInt::from(1) << shift;
+            let v = Json::Int(n.clone());
+            let bytes = serialize(&v);
+            assert_eq!(deserialize(&bytes).unwrap(), v);
+            let v = Json::Int(-n);
+            let bytes = serialize(&v);
+            assert_eq!(deserialize(&bytes).unwrap(), v);
+        }
+    }
+
+    #[test]
     fn canonical_output_is_deterministic() {
         let v = parse(r#"{ "a"  : 1 ,  "b": [ 2,3 ] }"#).unwrap();
         assert_eq!(v.to_string_canonical(), r#"{"a":1,"b":[2,3]}"#);
+    }
+
+    #[test]
+    fn canonical_distinguishes_int_and_float() {
+        // `1` is Int and renders as `1`; `1.0` is Float and renders as
+        // `1.0`. Re-parsing returns the same variants.
+        let i = parse("1").unwrap();
+        let f = parse("1.0").unwrap();
+        assert_ne!(i, f);
+        assert_eq!(i.to_string_canonical(), "1");
+        assert_eq!(f.to_string_canonical(), "1.0");
+        assert_eq!(parse(&i.to_string_canonical()).unwrap(), i);
+        assert_eq!(parse(&f.to_string_canonical()).unwrap(), f);
     }
 }

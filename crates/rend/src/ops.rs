@@ -318,18 +318,32 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             _ => Err(bad("json_to_string(json)".into())),
         },
         "json_to_i64" => match args {
-            [Value::Json(crate::json::Json::Int(n))] => Ok(Value::Int(*n)),
-            [Value::Json(crate::json::Json::U64(n))] if *n <= i64::MAX as u64 => Ok(Value::Int(*n as i64)),
+            [Value::Json(crate::json::Json::Int(n))] => {
+                use num_traits::ToPrimitive;
+                match n.to_i64() {
+                    Some(v) => Ok(Value::Int(v)),
+                    None => Err(bad(format!(
+                        "json_to_i64: integer out of i64 range: {n}",
+                    ))),
+                }
+            }
             [Value::Json(other)] => Err(bad(format!(
-                "json_to_i64: value is not an i64-compatible number: {other}",
+                "json_to_i64: value is not an integer: {other}",
             ))),
             _ => Err(bad("json_to_i64(json)".into())),
         },
         "json_to_u64" => match args {
-            [Value::Json(crate::json::Json::U64(n))] => Ok(Value::U64(*n)),
-            [Value::Json(crate::json::Json::Int(n))] if *n >= 0 => Ok(Value::U64(*n as u64)),
+            [Value::Json(crate::json::Json::Int(n))] => {
+                use num_traits::ToPrimitive;
+                match n.to_u64() {
+                    Some(v) => Ok(Value::U64(v)),
+                    None => Err(bad(format!(
+                        "json_to_u64: integer out of u64 range or negative: {n}",
+                    ))),
+                }
+            }
             [Value::Json(other)] => Err(bad(format!(
-                "json_to_u64: value is not a non-negative number: {other}",
+                "json_to_u64: value is not a non-negative integer: {other}",
             ))),
             _ => Err(bad("json_to_u64(json)".into())),
         },

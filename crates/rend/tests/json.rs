@@ -178,7 +178,7 @@ fn json_to_i64_on_string_aborts() {
             return json_to_i64(j);
         }
     "#).unwrap_err();
-    assert!(err.to_string().contains("i64-compatible"), "got: {err}");
+    assert!(err.to_string().contains("not an integer"), "got: {err}");
 }
 
 // ---------- stringify round-trip ----------
