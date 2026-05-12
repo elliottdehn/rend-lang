@@ -514,6 +514,18 @@ pub enum ExprKind {
     U32(u32),
     U64(u64),
     U128(u128),
+    /// JSON object literal: `{"a": 2, "b": expr, ...}`. Keys are
+    /// static strings; values are general expressions evaluated at
+    /// runtime. Produces a `Value::Json(Json::Object(...))` whose
+    /// values are the evaluated rend Values.
+    JsonObject(Vec<(String, Box<Expr>)>),
+    /// JSON array literal — heterogeneous, distinct from rend's
+    /// typed `[T]` arrays. Only appears as a value inside a JSON
+    /// literal context. Produces `Value::Json(Json::Array(...))`.
+    JsonArray(Vec<Box<Expr>>),
+    /// JSON `null` literal. Only meaningful inside a JSON literal
+    /// context; produces `Value::Json(Json::Null)`.
+    JsonNull,
     Bool(bool),
     Str(String),
     Ident(String),

@@ -1083,6 +1083,22 @@ impl<'a> Interp<'a> {
             ExprKind::Int(n) => Ok(Value::int(n.clone())),
             ExprKind::UInt(n) => Ok(Value::uint(n.clone())),
             ExprKind::Float(n) => Ok(Value::Float(*n)),
+            ExprKind::JsonNull => Ok(Value::Json(crate::json::Json::Null)),
+            ExprKind::JsonObject(pairs) => {
+                let mut map = indexmap::IndexMap::with_capacity(pairs.len());
+                for (k, v_expr) in pairs {
+                    let v = self.eval(v_expr, scopes)?;
+                    map.insert(k.clone(), v);
+                }
+                Ok(Value::Json(crate::json::Json::Object(map)))
+            }
+            ExprKind::JsonArray(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.eval(item, scopes)?);
+                }
+                Ok(Value::Json(crate::json::Json::Array(out)))
+            }
             ExprKind::I32(n) => Ok(Value::I32(*n)),
             ExprKind::U32(n) => Ok(Value::U32(*n)),
             ExprKind::U64(n) => Ok(Value::U64(*n)),

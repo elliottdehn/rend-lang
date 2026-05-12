@@ -291,9 +291,15 @@ fn classify_if(ifs: &IfStmt, acc: &mut EffectClass, ctx: &Ctx) {
 
 fn classify_expr(expr: &Expr, acc: &mut EffectClass, ctx: &Ctx) {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::Float(_) | ExprKind::I32(_) | ExprKind::U32(_)
+        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::Float(_) | ExprKind::JsonNull | ExprKind::I32(_) | ExprKind::U32(_)
         | ExprKind::U64(_) | ExprKind::U128(_) | ExprKind::Bool(_)
         | ExprKind::Str(_) | ExprKind::Prev => {}
+        ExprKind::JsonObject(pairs) => {
+            for (_, v) in pairs { classify_expr(v, acc, ctx); }
+        }
+        ExprKind::JsonArray(items) => {
+            for v in items { classify_expr(v, acc, ctx); }
+        }
         ExprKind::Ident(name) => {
             // Reading a state slot via bare ident (`return n;` where
             // `n` is a `state n: i64;`). Locals don't show up in

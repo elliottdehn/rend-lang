@@ -582,8 +582,20 @@ fn annotate_expr(
                 ElseBranch::If(inner) => annotate_if(inner, scopes, state_types, ifaces),
             }
         }
+        // JSON object/array literals: recurse into each value
+        // expression so their idents resolve and types annotate.
+        ExprKind::JsonObject(pairs) => {
+            for (_, v) in pairs {
+                annotate_expr(v, scopes, state_types, ifaces);
+            }
+        }
+        ExprKind::JsonArray(items) => {
+            for item in items {
+                annotate_expr(item, scopes, state_types, ifaces);
+            }
+        }
         // Leaves: nothing to descend into.
-        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::Float(_) | ExprKind::I32(_) | ExprKind::U32(_)
+        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::Float(_) | ExprKind::JsonNull | ExprKind::I32(_) | ExprKind::U32(_)
         | ExprKind::U64(_) | ExprKind::U128(_) | ExprKind::Bool(_)
         | ExprKind::Str(_) | ExprKind::Ident(_) | ExprKind::Prev => {}
     }
@@ -1181,7 +1193,7 @@ impl TypeChecker {
             Stmt::Assign { target, value, span } => {
                 let actual = self.check_expr(value, env)?;
                 let expected = self.check_lvalue(target, env)?;
-                if actual != expected {
+                if !types_compatible(&actual, &expected) {
                     return Err(Error::new(
                         ErrorKind::Type,
                         format!("assignment: expected {expected}, got {actual}"),
@@ -1195,7 +1207,7 @@ impl TypeChecker {
                     Some(e) => self.check_expr(e, env)?,
                     None => Type::Unit,
                 };
-                if &actual != expected_ret {
+                if !types_compatible(&actual, expected_ret) {
                     return Err(Error::new(
                         ErrorKind::Type,
                         format!(
@@ -1373,7 +1385,7 @@ impl TypeChecker {
                 }
                 for (i, (a, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                     let actual = self.check_expr(a, env)?;
-                    if &actual != expected {
+                    if !types_compatible(&actual, expected) {
                         return Err(Error::new(
                             ErrorKind::Type,
                             format!(
@@ -1945,6 +1957,9 @@ impl TypeChecker {
             ExprKind::Int(_) => Ok(Type::Int),
             ExprKind::UInt(_) => Ok(Type::UInt),
             ExprKind::Float(_) => Ok(Type::Float),
+            ExprKind::JsonObject(_) | ExprKind::JsonArray(_) | ExprKind::JsonNull => {
+                Ok(Type::Json)
+            }
             ExprKind::I32(_) => Ok(Type::I32),
             ExprKind::U32(_) => Ok(Type::U32),
             ExprKind::U64(_) => Ok(Type::U64),
@@ -2343,7 +2358,7 @@ impl TypeChecker {
                 }
                 for (i, (a, expected)) in args.iter().zip(sig.params.iter()).enumerate() {
                     let actual = self.check_expr(a, env)?;
-                    if &actual != expected {
+                    if !types_compatible(&actual, expected) {
                         return Err(Error::new(
                             ErrorKind::Type,
                             format!(
@@ -2404,7 +2419,7 @@ impl TypeChecker {
                     }
                     for (i, (a, expected)) in args.iter().zip(sig.params.iter()).enumerate() {
                         let actual = self.check_expr(a, env)?;
-                        if &actual != expected {
+                        if !types_compatible(&actual, expected) {
                             return Err(Error::new(
                                 ErrorKind::Type,
                                 format!("arg {i} of '{mod_name}::{name}': expected {expected}, got {actual}"),
@@ -2919,7 +2934,7 @@ impl TypeChecker {
                 }
                 for (i, (a, expected)) in args.iter().zip(sig.params.iter()).enumerate() {
                     let actual = self.check_expr(a, env)?;
-                    if &actual != expected {
+                    if !types_compatible(&actual, expected) {
                         return Err(Error::new(
                             ErrorKind::Type,
                             format!(
@@ -2968,7 +2983,7 @@ impl TypeChecker {
                 }
                 for (i, (a, expected)) in args.iter().zip(payload.iter()).enumerate() {
                     let actual = self.check_expr(a, env)?;
-                    if &actual != expected {
+                    if !types_compatible(&actual, expected) {
                         return Err(Error::new(
                             ErrorKind::Type,
                             format!(
@@ -3060,7 +3075,7 @@ impl TypeChecker {
                     match &result_ty {
                         None => result_ty = Some(body_ty),
                         Some(expected) => {
-                            if &body_ty != expected {
+                            if !types_compatible(&body_ty, expected) {
                                 return Err(Error::new(
                                     ErrorKind::Type,
                                     format!(
@@ -3176,6 +3191,22 @@ impl TypeChecker {
 
 fn is_int(t: &Type) -> bool {
     matches!(t, Type::Int | Type::UInt | Type::Float | Type::I32 | Type::U32 | Type::U64 | Type::U128)
+}
+
+/// Returns true if `actual` can flow into a slot typed `expected`.
+/// Mostly type equality, except Type::Json is polymorphic — any
+/// primitive whose runtime form is a valid JSON leaf
+/// (Bool/Int/UInt/Float/String) is assignable to a `json` slot, as
+/// are JSON composites and `Type::Json` itself.
+pub fn types_compatible(actual: &Type, expected: &Type) -> bool {
+    if actual == expected { return true; }
+    if expected == &Type::Json {
+        return matches!(
+            actual,
+            Type::Bool | Type::Int | Type::UInt | Type::Float | Type::String | Type::Json,
+        );
+    }
+    false
 }
 
 fn check_binop(op: BinOp, l: &Type, r: &Type, span: Span) -> Result<Type, Error> {

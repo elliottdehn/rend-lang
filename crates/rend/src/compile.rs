@@ -1645,6 +1645,74 @@ impl<'a> FnCompiler<'a> {
                 self.code.push(Instr::LoadConst { dst, idx });
                 Ok(())
             }
+            ExprKind::JsonNull => {
+                let name_idx = self.const_idx(Const::Str("_json_null".to_string()));
+                self.code.push(Instr::BuiltinCall {
+                    dst, name_idx, args_start: 0, n_args: 0,
+                });
+                Ok(())
+            }
+            ExprKind::JsonObject(pairs) => {
+                // Lay out 2*N consecutive args: alternating key
+                // string + value. The `_json_object` builtin
+                // expects this shape.
+                let n_pairs = pairs.len();
+                if n_pairs == 0 {
+                    let name_idx = self.const_idx(Const::Str("_json_object".to_string()));
+                    self.code.push(Instr::BuiltinCall {
+                        dst, name_idx, args_start: 0, n_args: 0,
+                    });
+                    return Ok(());
+                }
+                let args_base = self.alloc();
+                let mut allocs = vec![args_base];
+                let key_idx = self.const_idx(Const::Str(pairs[0].0.clone()));
+                self.code.push(Instr::LoadConst { dst: args_base, idx: key_idx });
+                let val_reg = self.alloc();
+                allocs.push(val_reg);
+                self.compile_expr_into(&pairs[0].1, val_reg)?;
+                for (k, v) in pairs.iter().skip(1) {
+                    let kr = self.alloc();
+                    allocs.push(kr);
+                    let kidx = self.const_idx(Const::Str(k.clone()));
+                    self.code.push(Instr::LoadConst { dst: kr, idx: kidx });
+                    let vr = self.alloc();
+                    allocs.push(vr);
+                    self.compile_expr_into(v, vr)?;
+                }
+                let name_idx = self.const_idx(Const::Str("_json_object".to_string()));
+                self.code.push(Instr::BuiltinCall {
+                    dst, name_idx, args_start: args_base,
+                    n_args: (2 * n_pairs) as u8,
+                });
+                for r in allocs.into_iter().rev() { self.free(r); }
+                Ok(())
+            }
+            ExprKind::JsonArray(items) => {
+                let n = items.len();
+                if n == 0 {
+                    let name_idx = self.const_idx(Const::Str("_json_array".to_string()));
+                    self.code.push(Instr::BuiltinCall {
+                        dst, name_idx, args_start: 0, n_args: 0,
+                    });
+                    return Ok(());
+                }
+                let args_base = self.alloc();
+                let mut allocs = vec![args_base];
+                self.compile_expr_into(&items[0], args_base)?;
+                for v in items.iter().skip(1) {
+                    let r = self.alloc();
+                    allocs.push(r);
+                    self.compile_expr_into(v, r)?;
+                }
+                let name_idx = self.const_idx(Const::Str("_json_array".to_string()));
+                self.code.push(Instr::BuiltinCall {
+                    dst, name_idx, args_start: args_base,
+                    n_args: n as u8,
+                });
+                for r in allocs.into_iter().rev() { self.free(r); }
+                Ok(())
+            }
             ExprKind::I32(n) => {
                 let idx = self.const_idx(Const::I32(*n));
                 self.code.push(Instr::LoadConst { dst, idx });

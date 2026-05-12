@@ -391,6 +391,9 @@ fn check_expr(
         ExprKind::Int(_) => Ok(Type::Int),
         ExprKind::UInt(_) => Ok(Type::UInt),
         ExprKind::Float(_) => Ok(Type::Float),
+        ExprKind::JsonObject(_) | ExprKind::JsonArray(_) | ExprKind::JsonNull => {
+            Ok(Type::Json)
+        }
         ExprKind::I32(_) => Ok(Type::I32),
         ExprKind::U32(_) => Ok(Type::U32),
         ExprKind::U64(_) => Ok(Type::U64),

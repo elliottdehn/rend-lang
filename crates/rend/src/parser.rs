@@ -1414,6 +1414,108 @@ impl Parser {
         Ok(e)
     }
 
+    /// Parse a JSON object literal at the cursor (which is on `{`).
+    /// Keys are static string literals; values can be any JSON shape
+    /// (recursive arrays/objects, null, primitives) or a general
+    /// rend expression (`{"x": some_var}`). Produces an
+    /// `ExprKind::JsonObject`.
+    fn parse_json_object(&mut self, opener_span: Span) -> Result<Expr, Error> {
+        self.expect(Token::LBrace, "expected '{'")?;
+        let mut pairs: Vec<(String, Box<Expr>)> = Vec::new();
+        if self.peek_is(&Token::RBrace) {
+            self.advance();
+            return Ok(Expr {
+                kind: ExprKind::JsonObject(pairs),
+                span: Span { start: opener_span.start, end: self.tokens[self.pos - 1].span.end },
+            });
+        }
+        loop {
+            let key = match self.peek_token().clone() {
+                Token::Str(s) => { self.advance(); s }
+                other => return Err(Error::new(
+                    ErrorKind::Parse,
+                    format!("expected JSON object key (a string literal), got {other:?}"),
+                    self.cur_span(),
+                )),
+            };
+            self.expect(Token::Colon, "expected ':' after JSON object key")?;
+            let value = self.parse_json_value()?;
+            pairs.push((key, Box::new(value)));
+            match self.peek_token() {
+                Token::Comma => { self.advance(); }
+                Token::RBrace => {
+                    self.advance();
+                    return Ok(Expr {
+                        kind: ExprKind::JsonObject(pairs),
+                        span: Span { start: opener_span.start, end: self.tokens[self.pos - 1].span.end },
+                    });
+                }
+                other => return Err(Error::new(
+                    ErrorKind::Parse,
+                    format!("expected ',' or '}}' in JSON object, got {other:?}"),
+                    self.cur_span(),
+                )),
+            }
+        }
+    }
+
+    /// Parse a JSON array literal `[v1, v2, ...]`. Only reached
+    /// from inside `parse_json_value`; bare `[...]` at expression
+    /// position still parses as a typed rend array via `parse_primary`.
+    fn parse_json_array(&mut self) -> Result<Expr, Error> {
+        let opener_span = self.cur_span();
+        self.expect(Token::LBracket, "expected '['")?;
+        let mut items: Vec<Box<Expr>> = Vec::new();
+        if self.peek_is(&Token::RBracket) {
+            self.advance();
+            return Ok(Expr {
+                kind: ExprKind::JsonArray(items),
+                span: Span { start: opener_span.start, end: self.tokens[self.pos - 1].span.end },
+            });
+        }
+        loop {
+            items.push(Box::new(self.parse_json_value()?));
+            match self.peek_token() {
+                Token::Comma => { self.advance(); }
+                Token::RBracket => {
+                    self.advance();
+                    return Ok(Expr {
+                        kind: ExprKind::JsonArray(items),
+                        span: Span { start: opener_span.start, end: self.tokens[self.pos - 1].span.end },
+                    });
+                }
+                other => return Err(Error::new(
+                    ErrorKind::Parse,
+                    format!("expected ',' or ']' in JSON array, got {other:?}"),
+                    self.cur_span(),
+                )),
+            }
+        }
+    }
+
+    /// Parse a single JSON-value position (the RHS of a `"key":`
+    /// pair, or an element of a JSON array). Recognizes nested
+    /// arrays/objects, `null`, primitive literals, and falls back to
+    /// a general rend expression for things like variable refs and
+    /// arithmetic. The latter lets you write
+    ///   `{"name": user_name, "age": age + 1}`
+    /// with rend bindings showing up directly.
+    fn parse_json_value(&mut self) -> Result<Expr, Error> {
+        match self.peek_token() {
+            Token::LBrace => {
+                let s = self.cur_span();
+                self.parse_json_object(s)
+            }
+            Token::LBracket => self.parse_json_array(),
+            Token::Ident(s) if s == "null" => {
+                let span = self.cur_span();
+                self.advance();
+                Ok(Expr { kind: ExprKind::JsonNull, span })
+            }
+            _ => self.parse_expr(),
+        }
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, Error> {
         let span = self.cur_span();
         match self.peek_token().clone() {
@@ -1584,15 +1686,31 @@ impl Parser {
             }
             Token::Match => self.parse_match_expr(),
             Token::LBrace => {
-                // Block-as-expression: `{ stmts; tail }`. Distinct
-                // from struct literals because those start with an
-                // ident (`Foo { ... }`).
-                let block_start = self.cur_span().start;
-                let block = self.parse_block()?;
-                Ok(Expr {
-                    kind: ExprKind::Block(block),
-                    span: Span { start: block_start, end: self.tokens[self.pos.saturating_sub(1)].span.end },
-                })
+                // `{` at expression-start position is one of:
+                //   * JSON object literal: `{}` or `{"key": expr, ...}`
+                //     — distinguished by the next token being `}`
+                //     or a string literal followed by `:`.
+                //   * Block expression: `{ stmts; tail }` — anything
+                //     else.
+                // Struct literals start with an ident (`Foo { ... }`)
+                // and don't enter this branch.
+                let opener_span = self.cur_span();
+                let looks_like_json = matches!(
+                    self.peek_token_at(1),
+                    Some(Token::RBrace),
+                )
+                || (matches!(self.peek_token_at(1), Some(Token::Str(_)))
+                    && matches!(self.peek_token_at(2), Some(Token::Colon)));
+                if looks_like_json {
+                    self.parse_json_object(opener_span)
+                } else {
+                    let block_start = opener_span.start;
+                    let block = self.parse_block()?;
+                    Ok(Expr {
+                        kind: ExprKind::Block(block),
+                        span: Span { start: block_start, end: self.tokens[self.pos.saturating_sub(1)].span.end },
+                    })
+                }
             }
             Token::If => self.parse_if_expr(),
             Token::Ident(name) => {
@@ -1773,6 +1891,12 @@ impl Parser {
 
     fn peek_token(&self) -> &Token {
         &self.tokens[self.pos].token
+    }
+
+    /// Peek the token `offset` positions ahead. Returns `None` past
+    /// EOF. `peek_token_at(0)` == `peek_token()`.
+    fn peek_token_at(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + offset).map(|s| &s.token)
     }
 
     fn cur_span(&self) -> Span {

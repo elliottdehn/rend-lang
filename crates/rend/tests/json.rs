@@ -296,3 +296,66 @@ fn parse_json_with_non_string_arg_is_compile_error() {
         "got: {err}",
     );
 }
+
+
+// ---------- source-level JSON literals ----------
+
+#[test]
+fn json_object_literal_at_top_level() {
+    // `{...}` at expression position with string-key+colon pattern
+    // is a JSON object literal, distinct from a block expression.
+    let v = rend::run(r#"
+        fn main() -> string {
+            let j = {"a": 2, "b": true};
+            return json_stringify(j);
+        }
+    "#).unwrap();
+    assert_eq!(v, rend::Value::Str(r#"{"a":2,"b":true}"#.into()));
+}
+
+#[test]
+fn empty_json_object_literal() {
+    let v = rend::run(r#"
+        fn main() -> string {
+            return json_stringify({});
+        }
+    "#).unwrap();
+    assert_eq!(v, rend::Value::Str("{}".into()));
+}
+
+#[test]
+fn json_object_with_nested_array_and_object() {
+    let v = rend::run(r#"
+        fn main() -> string {
+            let j = {"list": [1, "x", null, false], "nested": {"k": 7}};
+            return json_stringify(j);
+        }
+    "#).unwrap();
+    assert_eq!(v, rend::Value::Str(
+        r#"{"list":[1,"x",null,false],"nested":{"k":7}}"#.into(),
+    ));
+}
+
+#[test]
+fn json_object_value_can_reference_local() {
+    // Variable references inside JSON literal values evaluate
+    // through the normal expression path.
+    let v = rend::run(r#"
+        fn main() -> string {
+            let x = 42;
+            return json_stringify({"answer": x + 1});
+        }
+    "#).unwrap();
+    assert_eq!(v, rend::Value::Str(r#"{"answer":43}"#.into()));
+}
+
+#[test]
+fn json_null_literal_distinct_from_block() {
+    // `null` inside a json-value context is Json::Null. As a
+    // top-level expression it stays a regular ident lookup, which
+    // is what undefined-variable errors are for — we don't make
+    // `null` a global keyword, just a contextual one.
+    let err = rend::run("fn main() -> i64 { return null; }").unwrap_err();
+    assert!(err.to_string().contains("undefined"), "got: {err}");
+}
+

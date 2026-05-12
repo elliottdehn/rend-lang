@@ -505,6 +505,36 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             [_] => Ok(Value::Bool(false)),
             _ => Err(bad("json_is_null(json)".into())),
         },
+        // Backing builtins for the source-level JSON literal forms
+        // (`null`, `[...]`, `{...}`). Underscore-prefixed names so
+        // they can't be called from rend source — only the compiler
+        // emits these `BuiltinCall`s.
+        "_json_null" => match args {
+            [] => Ok(Value::Json(crate::json::Json::Null)),
+            _ => Err(bad("_json_null() takes no args".into())),
+        },
+        "_json_array" => {
+            Ok(Value::Json(crate::json::Json::Array(args.to_vec())))
+        }
+        "_json_object" => {
+            if args.len() % 2 != 0 {
+                return Err(bad("_json_object expects alternating key/value args".into()));
+            }
+            let mut map: indexmap::IndexMap<String, Value> =
+                indexmap::IndexMap::with_capacity(args.len() / 2);
+            let mut i = 0;
+            while i < args.len() {
+                let key = match &args[i] {
+                    Value::Str(s) => s.clone(),
+                    other => return Err(bad(format!(
+                        "_json_object: key must be a string, got {other}",
+                    ))),
+                };
+                map.insert(key, args[i + 1].clone());
+                i += 2;
+            }
+            Ok(Value::Json(crate::json::Json::Object(map)))
+        }
         "min" => match args {
             [Value::Array(elems), default] => {
                 if elems.is_empty() {
