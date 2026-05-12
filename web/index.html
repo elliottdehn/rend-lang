@@ -210,7 +210,59 @@
     <span class="k">return</span> ids;
 }
 </code></pre>
-  <p class="subtle" style="margin-top: 24px;">The same algorithm in SQL is a CTE wrapping <code>INSERT&nbsp;...&nbsp;ON&nbsp;CONFLICT&nbsp;DO&nbsp;NOTHING&nbsp;RETURNING&nbsp;id</code> with a <code>UNION&nbsp;ALL&nbsp;SELECT</code> fallback — one statement doing two unrelated jobs because the language can't say either of them directly — plus a stored procedure to make it composable, plus exception handling that allocates a subtransaction per call, plus a retry loop in the application. Stored procedures of this shape are how every non-trivial Supabase project ends up with a <code>database/functions/*.sql</code> directory nobody loves.</p>
+</section>
+
+<section>
+  <h2>The same thing in SQL</h2>
+  <p class="subtitle">For comparison: a Postgres / Supabase implementation of the same batch-dedup operation. Schema lives in a migration file; the logic lives in a PL/pgSQL stored procedure; the app calls it via PostgREST RPC.</p>
+
+  <h3 style="margin-top: 28px;">The schema &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— migrations/0001_create_strings.sql</span></h3>
+<pre><code><span class="k">CREATE TABLE</span> strings (
+    id      <span class="t">BIGSERIAL</span> <span class="k">PRIMARY KEY</span>,
+    content <span class="t">TEXT</span> <span class="k">NOT NULL UNIQUE</span>
+);
+</code></pre>
+
+  <h3 style="margin-top: 32px;">The stored procedure &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— database/functions/intern_batch.sql</span></h3>
+<pre><code><span class="k">CREATE OR REPLACE FUNCTION</span> intern_batch(inputs <span class="t">TEXT</span>[])
+<span class="k">RETURNS</span> <span class="t">BIGINT</span>[]
+<span class="k">LANGUAGE</span> plpgsql <span class="k">AS</span> $$
+<span class="k">DECLARE</span>
+    result   <span class="t">BIGINT</span>[] := <span class="s">'{}'</span>;
+    s        <span class="t">TEXT</span>;
+    found_id <span class="t">BIGINT</span>;
+<span class="k">BEGIN</span>
+    <span class="k">FOREACH</span> s <span class="k">IN ARRAY</span> inputs <span class="k">LOOP</span>
+        <span class="c">-- The CTE-with-UNION trick: ON CONFLICT DO NOTHING returns</span>
+        <span class="c">-- nothing on a duplicate, so we need a fallback SELECT to find</span>
+        <span class="c">-- the existing id. One statement doing two unrelated jobs</span>
+        <span class="c">-- because the language can't say either of them directly.</span>
+        <span class="k">WITH</span> ins <span class="k">AS</span> (
+            <span class="k">INSERT INTO</span> strings (content) <span class="k">VALUES</span> (s)
+            <span class="k">ON CONFLICT</span> (content) <span class="k">DO NOTHING</span>
+            <span class="k">RETURNING</span> id
+        )
+        <span class="k">SELECT</span> id <span class="k">INTO</span> found_id <span class="k">FROM</span> (
+            <span class="k">SELECT</span> id <span class="k">FROM</span> ins
+            <span class="k">UNION ALL</span>
+            <span class="k">SELECT</span> id <span class="k">FROM</span> strings <span class="k">WHERE</span> content = s
+            <span class="k">LIMIT</span> <span class="n">1</span>
+        ) sub;
+        result := array_append(result, found_id);
+    <span class="k">END LOOP</span>;
+    <span class="k">RETURN</span> result;
+<span class="k">END</span>;
+$$;
+</code></pre>
+
+  <p class="subtle" style="margin-top: 28px;">Pain points the rend version doesn't inherit:</p>
+  <ul style="color: var(--muted); padding-left: 22px; line-height: 1.6;">
+    <li><strong style="color: var(--fg);">Serial by construction.</strong> The <code>FOREACH</code> loop runs one string at a time. To parallelize you'd call the function from multiple app connections, each with its own transaction — which breaks atomicity across the batch.</li>
+    <li><strong style="color: var(--fg);">Exception handling has a tax.</strong> Using <code>EXCEPTION WHEN unique_violation</code> instead of the CTE-UNION pattern would allocate a subtransaction per loop iteration. The CTE pattern is the canonical workaround.</li>
+    <li><strong style="color: var(--fg);">PL/pgSQL is a DSL bolted onto SQL.</strong> Anemic types, no module system, no real composability, debugging by <code>RAISE NOTICE</code>, tests run inside the database. The surface looks like programming but every property of the tool fights you.</li>
+    <li><strong style="color: var(--fg);">Schema lives in migration files.</strong> Every change adds another <code>NNNN_xyz.sql</code> file the codebase carries forever. You can never look at a single file and know what the current schema is — you need external tooling to introspect the live database.</li>
+    <li><strong style="color: var(--fg);">User input flows into the function as <code>TEXT[]</code>.</strong> Nothing in the type signature distinguishes a literal payload value from a string the application built by concatenation. The SQL-injection class of bug is a property of the API surface, not absent by construction.</li>
+  </ul>
 </section>
 
 <section>
