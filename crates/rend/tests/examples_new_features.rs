@@ -56,6 +56,22 @@ fn example_44_event_handlers_fires_each_handler_on_every_emit() {
 }
 
 #[test]
+fn example_48_multi_symbol_order_book_uses_three_field_composite() {
+    // Three-field composite index `(symbol ASC, price ASC|DESC,
+    // placed_at ASC)`; one shared pbtree per side serves all
+    // instruments. Three fills + non-trivial leftovers per
+    // symbol; encoded result lands at 3_501_030_200 — see the
+    // example's commentary for the breakdown.
+    use rend::{Engine, Fuel};
+    let src = std::fs::read_to_string("examples/48_order_book_v2.rd").unwrap();
+    let kv = rend::kv::InMemoryKv::new();
+    let out = Engine::new()
+        .execute(&src, Fuel::new(500_000), &kv)
+        .unwrap();
+    assert_eq!(out.result, Value::U64(3_501_030_200));
+}
+
+#[test]
 fn example_47_order_book_with_composite_pbtree_bytes_keys() {
     // Bytes-keyed pbtree gives unbounded composite-index arity.
     // The order-book example hand-packs (price, time) into the
