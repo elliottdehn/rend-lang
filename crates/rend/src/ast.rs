@@ -519,7 +519,17 @@ pub enum Stmt {
     Return { value: Option<Expr>, span: Span },
     If(IfStmt),
     While { cond: Expr, body: Block, span: Span },
-    For { var: String, iter: Expr, body: Block, span: Span },
+    For {
+        var: String,
+        iter: Expr,
+        /// Optional `limit <int_expr>` clause: stop iteration after
+        /// this many bodies have executed (counted including any
+        /// `break` / `continue` exits). The expression is evaluated
+        /// once before the loop starts.
+        limit: Option<Box<Expr>>,
+        body: Block,
+        span: Span,
+    },
     /// `for i in start..end { ... }` (or `..=` for inclusive). Lowered
     /// to a counter loop in compile/interp without materializing an
     /// actual array. start/end must be the same integer type.

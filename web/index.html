@@ -192,34 +192,16 @@
 
 <span class="k">const</span> DAY_MS: <span class="t">u64</span> = <span class="n">86400000u64</span>;
 
-<span class="c">// Private helper. One read on a dedup hit; one write + an</span>
-<span class="c">// opportunistic GC sweep on a miss. The slot is caller-supplied,</span>
-<span class="c">// so this function never contends on `next_id`. `s: `string`` is</span>
-<span class="c">// sticky — any caller must supply a backtick-tagged value;</span>
-<span class="c">// computed strings are a typeck error.</span>
+<span class="c">// Private helper. One read on a dedup hit; one write on a miss.</span>
+<span class="c">// The slot is caller-supplied, so this function never contends</span>
+<span class="c">// on `next_id`. `s: `string`` is sticky — any caller must supply</span>
+<span class="c">// a backtick-tagged value; computed strings are a typeck error.</span>
 <span class="k">fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing.id &gt; <span class="n">0u64</span> {
         <span class="k">return</span> InternResult { id: existing.id, fresh: <span class="k">false</span> };
     }
-    <span class="k">let</span> now = block_timestamp();
-    forward[s] = Entry { id: slot, created: now };
-
-    <span class="c">// GC: drop up to 2 stale entries (&gt;24h old), ascending by id.</span>
-    <span class="c">// Walking `by_id` yields content strings in id order; deleting</span>
-    <span class="c">// from `forward` auto-removes the corresponding index back-link.</span>
-    <span class="c">// ids are assigned monotonically, so `created` is non-decreasing</span>
-    <span class="c">// in id — the walk stops at the first non-stale entry.</span>
-    <span class="k">let</span> cutoff = <span class="k">if</span> now &gt; DAY_MS { now - DAY_MS } <span class="k">else</span> { <span class="n">0u64</span> };
-    <span class="k">let</span> removed = <span class="n">0u64</span>;
-    <span class="k">for</span> old_content <span class="k">in</span> by_id {
-        <span class="k">if</span> removed &gt;= <span class="n">2u64</span> { <span class="k">break</span>; }
-        <span class="k">let</span> e = forward[old_content];
-        <span class="k">if</span> e.id == slot { <span class="k">break</span>; }
-        <span class="k">if</span> e.created &gt;= cutoff { <span class="k">break</span>; }
-        <span class="k">delete</span> forward[old_content];
-        removed = removed + <span class="n">1u64</span>;
-    }
+    forward[s] = Entry { id: slot, created: block_timestamp() };
     <span class="k">return</span> InternResult { id: slot, fresh: <span class="k">true</span> };
 }
 
@@ -236,6 +218,26 @@
 
     <span class="k">parallel for</span> (i, s) <span class="k">in</span> strings <span class="k">to</span> results {
         intern_at(s, slots[i])
+    }
+
+    <span class="c">// One GC sweep per batch — 2 stale rows per fresh insert.</span>
+    <span class="c">// Doing this here (rather than inside intern_at) keeps the</span>
+    <span class="c">// parallel legs free of contention on the same low-id rows.</span>
+    <span class="c">// Walking `by_id` yields content strings in id order; deleting</span>
+    <span class="c">// from `forward` auto-removes the corresponding back-link via</span>
+    <span class="c">// the index maintenance pass. ids are assigned monotonically,</span>
+    <span class="c">// so `created` is non-decreasing in id — the walk stops at</span>
+    <span class="c">// the first non-stale entry.</span>
+    <span class="k">let</span> fresh = <span class="n">0u64</span>;
+    <span class="k">for</span> r <span class="k">in</span> results {
+        <span class="k">if</span> r.fresh { fresh = fresh + <span class="n">1u64</span>; }
+    }
+    <span class="k">let</span> now    = block_timestamp();
+    <span class="k">let</span> cutoff = <span class="k">if</span> now &gt; DAY_MS { now - DAY_MS } <span class="k">else</span> { <span class="n">0u64</span> };
+    <span class="k">for</span> old_content <span class="k">in</span> by_id <span class="k">limit</span> fresh * <span class="n">2u64</span> {
+        <span class="k">let</span> e = forward[old_content];
+        <span class="k">if</span> e.created &gt;= cutoff { <span class="k">break</span>; }
+        <span class="k">delete</span> forward[old_content];
     }
 
     <span class="k">return</span> results;

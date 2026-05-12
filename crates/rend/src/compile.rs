@@ -780,7 +780,7 @@ impl<'a> FnCompiler<'a> {
             }
             Stmt::If(if_stmt) => self.compile_if(if_stmt),
             Stmt::While { cond, body, .. } => self.compile_while(cond, body),
-            Stmt::For { var, iter, body, .. } => self.compile_for(var, iter, body),
+            Stmt::For { var, iter, body, limit, .. } => self.compile_for(var, iter, body, limit.as_deref()),
             Stmt::ForRange { var, start, end, inclusive, body, .. } => {
                 self.compile_for_range(var, start, end, *inclusive, body)
             }
@@ -1745,7 +1745,25 @@ impl<'a> FnCompiler<'a> {
         Ok(())
     }
 
-    fn compile_for(&mut self, var: &str, iter: &Expr, body: &Block) -> Result<(), Error> {
+    fn compile_for(&mut self, var: &str, iter: &Expr, body: &Block, limit: Option<&Expr>) -> Result<(), Error> {
+        // Compile any `limit N` expression once into a counter that
+        // each iteration's compiled-body decrements. We pass the
+        // counter (and a constant `1`) into the streaming functions
+        // so they can emit the check + decrement at the iteration
+        // top without duplicating the materialization scaffolding.
+        let limit_regs: Option<(u16, u16)> = match limit {
+            Some(lim) => {
+                let remaining_reg = self.alloc();
+                self.compile_expr_into(lim, remaining_reg)?;
+                // The limit type is u64 (typeck enforces) so the
+                // `1` we subtract per iteration must also be u64.
+                let one_reg = self.alloc();
+                let one_idx = self.const_idx(Const::U64(1));
+                self.code.push(Instr::LoadConst { dst: one_reg, idx: one_idx });
+                Some((remaining_reg, one_reg))
+            }
+            None => None,
+        };
         // Streaming fast paths: iterating directly over a pmap or
         // pvec state never materializes the full collection.
         // The compiler emits a tight loop driven by a cursor /
@@ -1756,13 +1774,13 @@ impl<'a> FnCompiler<'a> {
             if let Some(&state_idx) = self.state_index.get(name) {
                 match &self.state_types[state_idx] {
                     Type::PVec { .. } => {
-                        return self.compile_for_streaming_pvec(state_idx as u16, var, body);
+                        return self.compile_for_streaming_pvec(state_idx as u16, var, body, limit_regs);
                     }
                     Type::PMap { .. } => {
-                        return self.compile_for_streaming_pmap(state_idx as u16, var, body);
+                        return self.compile_for_streaming_pmap(state_idx as u16, var, body, limit_regs);
                     }
                     Type::PBTree { .. } => {
-                        return self.compile_for_streaming_pbtree(state_idx as u16, var, body);
+                        return self.compile_for_streaming_pbtree(state_idx as u16, var, body, limit_regs);
                     }
                     _ => {}
                 }
@@ -1811,6 +1829,7 @@ impl<'a> FnCompiler<'a> {
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });
+        let limit_break_pos = self.emit_limit_check(limit_regs);
         self.compile_block(body)?;
         let frame = self.loop_stack.pop().unwrap();
 
@@ -1835,6 +1854,7 @@ impl<'a> FnCompiler<'a> {
             let off = (end_pos as i32) - (*pos as i32) - 1;
             if let Instr::Jump { offset } = &mut self.code[*pos] { *offset = off; }
         }
+        self.patch_limit_break(limit_break_pos, end_pos);
         self.scopes.pop();
         self.free(var_reg);
         self.free(one_reg);
@@ -1852,6 +1872,7 @@ impl<'a> FnCompiler<'a> {
         state_idx: u16,
         var: &str,
         body: &Block,
+        limit_regs: Option<(u16, u16)>,
     ) -> Result<(), Error> {
         let len_reg = self.alloc();
         self.code.push(Instr::PVecLen { dst: len_reg, state_idx });
@@ -1880,6 +1901,7 @@ impl<'a> FnCompiler<'a> {
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });
+        let limit_break_pos = self.emit_limit_check(limit_regs);
         self.compile_block(body)?;
         let frame = self.loop_stack.pop().unwrap();
 
@@ -1901,6 +1923,7 @@ impl<'a> FnCompiler<'a> {
             let off = (end_pos as i32) - (*pos as i32) - 1;
             if let Instr::Jump { offset } = &mut self.code[*pos] { *offset = off; }
         }
+        self.patch_limit_break(limit_break_pos, end_pos);
         self.scopes.pop();
         self.free(var_reg);
         self.free(counter_reg);
@@ -1917,6 +1940,7 @@ impl<'a> FnCompiler<'a> {
         state_idx: u16,
         var: &str,
         body: &Block,
+        limit_regs: Option<(u16, u16)>,
     ) -> Result<(), Error> {
         let cursor_reg = self.alloc();
         self.code.push(Instr::PMapWalkInit { dst: cursor_reg, state_idx });
@@ -1936,6 +1960,7 @@ impl<'a> FnCompiler<'a> {
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });
+        let limit_break_pos = self.emit_limit_check(limit_regs);
         self.compile_block(body)?;
         let frame = self.loop_stack.pop().unwrap();
 
@@ -1956,6 +1981,7 @@ impl<'a> FnCompiler<'a> {
             let off = (end_pos as i32) - (*pos as i32) - 1;
             if let Instr::Jump { offset } = &mut self.code[*pos] { *offset = off; }
         }
+        self.patch_limit_break(limit_break_pos, end_pos);
         self.scopes.pop();
         self.free(var_reg);
         self.free(cursor_reg);
@@ -1970,6 +1996,7 @@ impl<'a> FnCompiler<'a> {
         state_idx: u16,
         var: &str,
         body: &Block,
+        limit_regs: Option<(u16, u16)>,
     ) -> Result<(), Error> {
         let cursor_reg = self.alloc();
         self.code.push(Instr::PBTreeWalkInit { dst: cursor_reg, state_idx });
@@ -1987,6 +2014,11 @@ impl<'a> FnCompiler<'a> {
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });
+        // Inject the limit check before the user's body so an
+        // early exit doesn't even read the body's bytecode. The
+        // returned position is the JumpIfFalse we'll patch to
+        // jump to end_pos once we know where that is.
+        let limit_break_pos = self.emit_limit_check(limit_regs);
         self.compile_block(body)?;
         let frame = self.loop_stack.pop().unwrap();
 
@@ -2007,10 +2039,46 @@ impl<'a> FnCompiler<'a> {
             let off = (end_pos as i32) - (*pos as i32) - 1;
             if let Instr::Jump { offset } = &mut self.code[*pos] { *offset = off; }
         }
+        self.patch_limit_break(limit_break_pos, end_pos);
         self.scopes.pop();
         self.free(var_reg);
         self.free(cursor_reg);
         Ok(())
+    }
+
+    /// Emit the per-iteration limit check + decrement. Returns the
+    /// position of the `JumpIfFalse` that triggers loop-end; the
+    /// caller patches its offset once `end_pos` is known. Returns
+    /// `None` when no limit is in play.
+    fn emit_limit_check(&mut self, limit_regs: Option<(u16, u16)>) -> Option<usize> {
+        let (remaining_reg, one_reg) = limit_regs?;
+        // remaining is u64 (typeck enforces); compare against a u64
+        // zero so the BinOp's operand types agree.
+        let zero_reg = self.alloc();
+        let zero_idx = self.const_idx(Const::U64(0));
+        self.code.push(Instr::LoadConst { dst: zero_reg, idx: zero_idx });
+        let check_reg = self.alloc();
+        self.code.push(Instr::Bin {
+            op: BinOp::Gt, dst: check_reg, lhs: remaining_reg, rhs: zero_reg,
+        });
+        let break_pos = self.code.len();
+        self.code.push(Instr::JumpIfFalse { cond: check_reg, offset: 0 });
+        self.free(check_reg);
+        self.free(zero_reg);
+        // Decrement remaining for the iteration we're about to run.
+        self.code.push(Instr::Bin {
+            op: BinOp::Sub, dst: remaining_reg, lhs: remaining_reg, rhs: one_reg,
+        });
+        Some(break_pos)
+    }
+
+    fn patch_limit_break(&mut self, break_pos: Option<usize>, end_pos: usize) {
+        if let Some(pos) = break_pos {
+            let off = (end_pos as i32) - (pos as i32) - 1;
+            if let Instr::JumpIfFalse { offset, .. } = &mut self.code[pos] {
+                *offset = off;
+            }
+        }
     }
 
     fn compile_if(&mut self, ifs: &IfStmt) -> Result<(), Error> {

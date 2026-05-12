@@ -1321,10 +1321,31 @@ impl Parser {
                 span: Span { start, end },
             });
         }
+        // Optional `limit <int_expr>` clause — contextual keyword
+        // (lexed as Ident("limit") so user code with `limit` as a
+        // parameter or local name keeps working). Recognized only
+        // here between the iter and the body block.
+        let limit = match self.peek_token() {
+            Token::Ident(s) if s == "limit" => {
+                self.advance();
+                let saved_struct = self.no_struct_literal;
+                self.no_struct_literal = true;
+                let e = self.parse_expr()?;
+                self.no_struct_literal = saved_struct;
+                Some(Box::new(e))
+            }
+            _ => None,
+        };
         self.no_struct_literal = saved;
         let body = self.parse_block()?;
         let end = body.span.end;
-        Ok(Stmt::For { var, iter: first, body, span: Span { start, end } })
+        Ok(Stmt::For {
+            var,
+            iter: first,
+            limit,
+            body,
+            span: Span { start, end },
+        })
     }
 
     /// `if cond { ... } else { ... }` as an expression. Both arms

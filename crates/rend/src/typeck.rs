@@ -1506,7 +1506,7 @@ impl TypeChecker {
                 self.check_block(body, env, expected_ret)?;
                 Ok(false)
             }
-            Stmt::For { var, iter, body, span } => {
+            Stmt::For { var, iter, body, limit, span } => {
                 let iter_ty = self.check_expr(iter, env)?;
                 // Sugar: iterating over a pmap state yields values;
                 // iterating over a pvec state yields elements. For
@@ -1525,6 +1525,20 @@ impl TypeChecker {
                         *span,
                     )),
                 };
+                // `for ... in ... limit N` — N must be u64,
+                // evaluated once before the loop. The expression
+                // types against the outer scope (the loop var
+                // isn't in scope for the limit).
+                if let Some(lim) = limit {
+                    let lim_ty = self.check_expr(lim, env)?;
+                    if !matches!(lim_ty.unwrap_explicit(), Type::U64) {
+                        return Err(Error::new(
+                            ErrorKind::Type,
+                            format!("`for ... limit N` requires `u64`, got {lim_ty}"),
+                            lim.span,
+                        ));
+                    }
+                }
                 env.push(HashMap::new());
                 env.last_mut().unwrap().insert(var.clone(), elem);
                 let r = self.check_block(body, env, expected_ret);

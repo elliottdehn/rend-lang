@@ -520,7 +520,7 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Flow::Normal(Value::Unit))
             }
-            Stmt::For { var, iter, body, span } => {
+            Stmt::For { var, iter, body, limit, span } => {
                 let arr_v = self.eval_iter_to_array(iter, scopes, *span)?;
                 let Value::Array(elems) = arr_v else {
                     return Err(Error::new(
@@ -529,7 +529,22 @@ impl<'a> Interp<'a> {
                         *span,
                     ));
                 };
+                // Optional limit clause — evaluated once before the
+                // loop. None ⇒ unbounded (`u64::MAX`).
+                let mut remaining: u64 = match limit {
+                    Some(lim) => {
+                        let v = self.eval(lim, scopes)?;
+                        value_to_u64(&v).ok_or_else(|| Error::new(
+                            ErrorKind::Runtime,
+                            format!("`for ... limit N`: N must be a non-negative integer, got {v}"),
+                            lim.span,
+                        ))?
+                    }
+                    None => u64::MAX,
+                };
                 for elem in elems {
+                    if remaining == 0 { break; }
+                    remaining -= 1;
                     scopes.push(Scope::default());
                     scopes.last_mut().unwrap().vars.insert(var.clone(), elem);
                     let flow = self.exec_block(body, scopes)?;
