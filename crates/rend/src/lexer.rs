@@ -81,6 +81,7 @@ impl<'a> Lexer<'a> {
                 }
                 b'&' => self.two_or_one(b'&', Token::AmpAmp, Token::Amp),
                 b'^' => { self.pos += 1; Token::Caret }
+                b'`' => { self.pos += 1; Token::Backtick }
                 b'|' => {
                     self.pos += 1;
                     if self.peek_byte() == Some(b'|') {

@@ -1747,6 +1747,27 @@ impl Parser {
                     span: Span { start, end: close.end },
                 })
             }
+            Token::Backtick => {
+                // `` `<expr>` `` — explicit literal. Parse the inner
+                // expression normally, then walk it to ensure every
+                // node is in the inert-literal subset. No AST
+                // wrapper: once validated, the inner expr is just a
+                // normal literal expression downstream (the safety
+                // property holds at the construction site).
+                let start = span.start;
+                self.advance();
+                let saved = self.no_struct_literal;
+                self.no_struct_literal = false;
+                let inner = self.parse_expr()?;
+                self.no_struct_literal = saved;
+                let close = self.cur_span();
+                self.expect(Token::Backtick, "expected closing '`' on explicit literal")?;
+                validate_inert_literal(&inner)?;
+                return Ok(Expr {
+                    kind: inner.kind,
+                    span: Span { start, end: close.end },
+                });
+            }
             Token::Reserve => {
                 // `reserve <count_expr> from <state_ident>`
                 let start = span.start;
@@ -2162,6 +2183,80 @@ impl Parser {
 
 pub fn parse(tokens: Vec<Spanned>) -> Result<Module, Error> {
     Parser::new(tokens).parse_module()
+}
+
+/// Walk an expression tree from inside a `` `<expr>` `` context
+/// and reject any form that requires runtime evaluation. The
+/// admissible set is purely declarative — primitive literals,
+/// struct literals whose fields are themselves inert, array /
+/// tuple / set / dict literals whose elements are inert, and JSON
+/// literals. The one concession to ergonomics is `-<numeric>` (a
+/// `Unary { op: Neg, operand: <int|float> }`), since users
+/// reasonably expect to write `` `-5` `` for negative numbers.
+///
+/// No type-level marker — once validated, the inner expression is
+/// indistinguishable from any other literal expression
+/// downstream. The safety property (no code embedded) is parse-
+/// time and load-bearing at the construction site only.
+fn validate_inert_literal(expr: &Expr) -> Result<(), Error> {
+    match &expr.kind {
+        ExprKind::Int(_)
+        | ExprKind::UInt(_)
+        | ExprKind::Float(_)
+        | ExprKind::I32(_)
+        | ExprKind::U32(_)
+        | ExprKind::U64(_)
+        | ExprKind::U128(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::JsonNull => Ok(()),
+        ExprKind::Array(elems)
+        | ExprKind::TupleLit(elems)
+        | ExprKind::SetLit(elems) => {
+            for e in elems { validate_inert_literal(e)?; }
+            Ok(())
+        }
+        ExprKind::JsonArray(items) => {
+            for e in items { validate_inert_literal(e)?; }
+            Ok(())
+        }
+        ExprKind::JsonObject(pairs) => {
+            for (_, e) in pairs { validate_inert_literal(e)?; }
+            Ok(())
+        }
+        ExprKind::DictLit(pairs) => {
+            for (k, v) in pairs {
+                validate_inert_literal(k)?;
+                validate_inert_literal(v)?;
+            }
+            Ok(())
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for (_, e) in fields { validate_inert_literal(e)?; }
+            Ok(())
+        }
+        // `-<numeric-literal>` shorthand: a unary negation whose
+        // operand is itself an inert numeric literal. Reject any
+        // other unary form (Not, BitNot, etc. — those compute).
+        ExprKind::Unary { op: UnOp::Neg, operand } => match &operand.kind {
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::I32(_)
+            | ExprKind::U32(_)
+            | ExprKind::U64(_)
+            | ExprKind::U128(_) => Ok(()),
+            _ => Err(Error::new(
+                ErrorKind::Parse,
+                "explicit literal `...` may only negate a numeric literal",
+                expr.span,
+            )),
+        }
+        _ => Err(Error::new(
+            ErrorKind::Parse,
+            "explicit literal `...` cannot contain code or non-literal expressions",
+            expr.span,
+        )),
+    }
 }
 
 #[cfg(test)]

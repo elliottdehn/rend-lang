@@ -140,6 +140,14 @@ pub enum Token {
     AmpAmp,
     PipePipe,
     Bang,
+    /// `` ` `` — explicit-literal delimiter. `` `<expr>` `` parses
+    /// `<expr>` as a normal expression but the parser then refuses
+    /// to accept anything outside the inert-literal subset
+    /// (primitives, struct literals with literal-only fields, array
+    /// literals with literal-only elements, JSON). Used at the
+    /// codegen boundary to embed untrusted data without risk of
+    /// the synthesized program executing it.
+    Backtick,
 
     Eof,
 }
