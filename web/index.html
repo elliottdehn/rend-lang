@@ -41,9 +41,17 @@
   h1 {
     font-size: clamp(38px, 6.5vw, 60px);
     line-height: 1.05;
-    margin: 0 0 24px 0;
+    margin: 0 0 16px 0;
     letter-spacing: -0.025em;
     font-weight: 700;
+  }
+  .subhead {
+    font-size: clamp(20px, 2.6vw, 26px);
+    line-height: 1.25;
+    margin: 0 0 28px 0;
+    color: var(--accent);
+    font-weight: 500;
+    letter-spacing: -0.01em;
   }
   .lede {
     font-size: 19px;
@@ -142,6 +150,7 @@
 <header>
   <div class="kicker">rend</div>
   <h1>The backend you'd<br>put money behind.</h1>
+  <p class="subhead">Never think about sharding again.</p>
   <p class="lede">
     A programming language with durable, ACID-transactional state.
     Multi-statement parallel inside one transaction.
