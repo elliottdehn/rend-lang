@@ -50,8 +50,10 @@ entry fn mint(auth: MintCap, to: Address, amount: u64) -> MintCap {
     assert(auth.uses_left > 0u64);
     assert(amount <= auth.max_per_call);
 
-    balances[to] = balances[to] + amount;
-    total_supply = total_supply + amount;
+    let prev_balance = balances[to];
+    let prev_supply  = total_supply;
+    balances[to] = prev_balance + amount;
+    total_supply = prev_supply + amount;
 
     return MintCap {
         uses_left: auth.uses_left - 1u64,

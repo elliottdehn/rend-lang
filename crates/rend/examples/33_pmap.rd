@@ -54,9 +54,13 @@ entry fn register_with_referral(who: Address, referrer: Address) -> bool {
         // 0" apart from "not registered".
         return false;
     }
+    // Hoist the referrer's credit read above the writes so it
+    // clusters with the pmap_contains walks instead of paying a
+    // separate KV round-trip after the writes fence the cluster.
+    let prev_credit = credit[referrer];
     members[who] = 1u64;
     referrals[who] = referrer;
-    credit[referrer] = credit[referrer] + REFERRAL_BONUS;
+    credit[referrer] = prev_credit + REFERRAL_BONUS;
     return true;
 }
 

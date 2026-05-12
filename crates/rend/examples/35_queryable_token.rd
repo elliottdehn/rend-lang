@@ -67,9 +67,11 @@ pure fn amount_after_fee(amount: u64, fee_bps: u64) -> u64 {
 
 entry fn transfer(to: Address, amount: u64) -> u64 {
     let from = msg_sender();
-    assert(balances[from] >= amount);
-    balances[from] = balances[from] - amount;
-    balances[to]   = balances[to]   + amount;
+    let b = balances[from];
+    let a = balances[to];
+    assert(b >= amount);
+    balances[from] = b - amount;
+    balances[to]   = a + amount;
     return balances[from];
 }
 
@@ -77,10 +79,12 @@ entry fn transfer(to: Address, amount: u64) -> u64 {
 // Returns the new total supply.
 entry fn mint_for_self(to: Address, amount: u64) -> u64 {
     let auth = root_cap;
+    let a    = balances[to];
+    let s    = total_supply;
     assert(auth.uses_left > 0u64);
     assert(amount <= auth.max_per_mint);
-    balances[to]   = balances[to] + amount;
-    total_supply   = total_supply + amount;
+    balances[to]   = a + amount;
+    total_supply   = s + amount;
     root_cap = MintCap {
         uses_left:    auth.uses_left - 1u64,
         max_per_mint: auth.max_per_mint,

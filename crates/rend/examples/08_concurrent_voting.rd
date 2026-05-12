@@ -16,9 +16,12 @@ state votes: map<i64, i64>;   // voter id → 1 if voted else 0
 state tally: map<i64, i64>;   // choice  → vote count
 
 entry fn vote(voter: i64, choice: i64) -> bool {
+    // Hoist the tally read above the votes write so both reads
+    // (votes[voter], tally[choice]) cluster into one Kv::get_many.
     if votes[voter] != 0 { return false; }
+    let prev_tally = tally[choice];
     votes[voter] = 1;
-    tally[choice] = tally[choice] + 1;
+    tally[choice] = prev_tally + 1;
     return true;
 }
 

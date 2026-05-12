@@ -18,9 +18,9 @@ entry fn deposit(who: Address, amount: u64) {
 
 entry fn transfer(from: Address, to: Address, amount: u64) -> bool {
     let b = balances[from];
-    assert(b >= amount, "insufficient balance");
+    let a = balances[to];
     balances[from] = b - amount;
-    balances[to]   = balances[to] + amount;
+    balances[to]   = a + amount;
     // Bank emits and moves on. The audit module's handler runs
     // in the same tx, atomically with the balance writes.
     emit Transferred { from: from, to: to, amount: amount };

@@ -29,8 +29,10 @@ state cpi: float;
 // Issue `principal` of new debt. `principal` is `uint` so the
 // caller can hand us a number that wouldn't fit anywhere else.
 entry fn issue(principal: uint) {
-    outstanding = outstanding + principal;
-    auction_count = auction_count + 1u64;
+    let o = outstanding;
+    let c = auction_count;
+    outstanding   = o + principal;
+    auction_count = c + 1u64;
 }
 
 // Compound the debt by `rate` percent (e.g. 5 means "5%"). The

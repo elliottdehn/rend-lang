@@ -27,15 +27,19 @@ entry fn transfer(from: Address, to: Address, amount: u64) -> u64 {
     // sender; we want to charge the *original* user. A real
     // contract would gate this with a capability — kept simple
     // here to focus on the cross-module call shape.
-    assert(balances[from] >= amount);
-    balances[from] = balances[from] - amount;
-    balances[to]   = balances[to]   + amount;
+    let b = balances[from];
+    let a = balances[to];
+    assert(b >= amount);
+    balances[from] = b - amount;
+    balances[to]   = a + amount;
     return balances[from];
 }
 
 entry fn mint(to: Address, amount: u64) -> u64 {
-    balances[to] = balances[to] + amount;
-    total_supply = total_supply + amount;
+    let a = balances[to];
+    let s = total_supply;
+    balances[to] = a + amount;
+    total_supply = s + amount;
     return total_supply;
 }
 

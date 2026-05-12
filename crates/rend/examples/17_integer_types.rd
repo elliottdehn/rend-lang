@@ -21,8 +21,10 @@ state total_supply: u128;
 state nonce: u64;
 
 entry fn mint(amount: u128) {
-    total_supply = total_supply + amount;
-    nonce = nonce + 1u64;
+    let s = total_supply;
+    let n = nonce;
+    total_supply = s + amount;
+    nonce = n + 1u64;
 }
 
 entry fn small_count(n: u32) -> u32 {

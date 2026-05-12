@@ -96,16 +96,18 @@ entry fn unpause() [OnlyAdmin] {
 nore entry fn deposit(amount: u64, lock_duration: u64)
     [WhenNotPaused, MinAmount(amount)] -> i64
 {
-    let id = meta.next_id + 1;
+    let next_id_prev = meta.next_id;
+    let total_prev   = meta.total;
+    let id           = next_id_prev + 1;
+    let unlocks_at   = block_timestamp() + lock_duration;
     meta.next_id = id;
-    let unlocks_at = block_timestamp() + lock_duration;
     positions[id] = Position {
         owner:      msg_sender(),
         amount:     amount,
         unlocks_at: unlocks_at,
         redeemed:   false,
     };
-    meta.total = meta.total + amount;
+    meta.total = total_prev + amount;
     emit Deposited {
         id: id,
         owner: msg_sender(),
@@ -116,7 +118,8 @@ nore entry fn deposit(amount: u64, lock_duration: u64)
 }
 
 nore entry fn withdraw(id: i64) -> u64 {
-    let p = positions[id];
+    let p          = positions[id];
+    let total_prev = meta.total;
     assert(!p.redeemed, "already redeemed");
     assert(p.owner == msg_sender(), "not your deposit");
     assert(block_timestamp() >= p.unlocks_at, "still locked");
@@ -124,7 +127,7 @@ nore entry fn withdraw(id: i64) -> u64 {
     // Field-path write through a map cell: the runtime reads the
     // whole Position, FieldSets `redeemed`, writes back.
     positions[id].redeemed = true;
-    meta.total = meta.total - p.amount;
+    meta.total = total_prev - p.amount;
     emit Withdrawn { id: id, owner: msg_sender(), amount: p.amount };
     return p.amount;
 }

@@ -9,9 +9,11 @@ module usd;
 state balances: pmap<Address, u64>;
 
 entry fn transfer(from: Address, to: Address, amount: u64) -> u64 {
-    assert(balances[from] >= amount);
-    balances[from] = balances[from] - amount;
-    balances[to]   = balances[to]   + amount;
+    let b = balances[from];
+    let a = balances[to];
+    assert(b >= amount);
+    balances[from] = b - amount;
+    balances[to]   = a + amount;
     return balances[from];
 }
 

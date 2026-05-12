@@ -21,9 +21,10 @@ entry fn balance_of(who: i64) -> i64 {
 
 entry fn transfer(from: i64, to: i64, amount: i64) -> bool {
     let b = balances[from];
+    let a = balances[to];
     if b < amount { return false; }
     balances[from] = b - amount;
-    balances[to] = balances[to] + amount;
+    balances[to] = a + amount;
     return true;
 }
 

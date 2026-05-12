@@ -10,9 +10,11 @@ entry fn transfer(from: Address, to: Address, amount: u64) -> u64 {
     // Demonstration twist: this implementation charges a 1u64
     // protocol fee on every transfer. The router doesn't know;
     // dispatch is dynamic.
-    assert(balances[from] >= amount + 1u64);
-    balances[from] = balances[from] - amount - 1u64;
-    balances[to]   = balances[to]   + amount;
+    let b = balances[from];
+    let a = balances[to];
+    assert(b >= amount + 1u64);
+    balances[from] = b - amount - 1u64;
+    balances[to]   = a + amount;
     return balances[from];
 }
 

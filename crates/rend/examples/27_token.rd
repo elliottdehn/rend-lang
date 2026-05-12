@@ -53,9 +53,10 @@ entry fn approve(owner: Address, spender: Address, amount: u64) -> bool {
 
 entry fn transfer(from: Address, to: Address, amount: u64) -> bool {
     let b = balances[from];
+    let a = balances[to];
     assert(b >= amount, "insufficient balance");
     balances[from] = b - amount;
-    balances[to]   = balances[to] + amount;
+    balances[to]   = a + amount;
     emit Transfer { from: from, to: to, amount: amount };
     return true;
 }
@@ -63,19 +64,22 @@ entry fn transfer(from: Address, to: Address, amount: u64) -> bool {
 entry fn transfer_from(spender: Address, from: Address, to: Address, amount: u64) -> bool {
     let k = AllowanceKey { owner: from, spender: spender };
     let allowed = allowances[k];
-    assert(allowed >= amount, "insufficient allowance");
     let b = balances[from];
+    let a = balances[to];
+    assert(allowed >= amount, "insufficient allowance");
     assert(b >= amount, "insufficient balance");
     allowances[k]  = allowed - amount;
     balances[from] = b - amount;
-    balances[to]   = balances[to] + amount;
+    balances[to]   = a + amount;
     emit Transfer { from: from, to: to, amount: amount };
     return true;
 }
 
 entry fn mint(to: Address, amount: u64) -> bool {
-    balances[to] = balances[to] + amount;
-    total_supply = total_supply + amount;
+    let a = balances[to];
+    let s = total_supply;
+    balances[to] = a + amount;
+    total_supply = s + amount;
     emit Mint { to: to, amount: amount };
     // ERC20 convention: mint emits Transfer from the zero address.
     emit Transfer { from: address(""), to: to, amount: amount };
@@ -84,9 +88,10 @@ entry fn mint(to: Address, amount: u64) -> bool {
 
 entry fn burn(from: Address, amount: u64) -> bool {
     let b = balances[from];
+    let s = total_supply;
     assert(b >= amount, "insufficient balance");
     balances[from] = b - amount;
-    total_supply   = total_supply - amount;
+    total_supply   = s - amount;
     emit Burn { from: from, amount: amount };
     emit Transfer { from: from, to: address(""), amount: amount };
     return true;
