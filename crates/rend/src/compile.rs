@@ -1631,7 +1631,12 @@ impl<'a> FnCompiler<'a> {
     fn compile_expr_into(&mut self, expr: &Expr, dst: u16) -> Result<(), Error> {
         match &expr.kind {
             ExprKind::Int(n) => {
-                let idx = self.const_idx(Const::Int(num_bigint::BigInt::from(*n)));
+                let idx = self.const_idx(Const::Int(n.clone()));
+                self.code.push(Instr::LoadConst { dst, idx });
+                Ok(())
+            }
+            ExprKind::UInt(n) => {
+                let idx = self.const_idx(Const::UInt(n.clone()));
                 self.code.push(Instr::LoadConst { dst, idx });
                 Ok(())
             }

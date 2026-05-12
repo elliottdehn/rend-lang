@@ -320,7 +320,7 @@ fn scan_expr(
                 ElseBranch::If(inner) => scan_if(inner, iter_var, states, summaries, found, seen),
             }
         }
-        ExprKind::Int(_) | ExprKind::I32(_) | ExprKind::U32(_) | ExprKind::U64(_)
+        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::I32(_) | ExprKind::U32(_) | ExprKind::U64(_)
         | ExprKind::U128(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Ident(_)
         | ExprKind::Prev => {}
     }

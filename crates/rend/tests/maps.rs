@@ -91,7 +91,7 @@ fn map_key_type_mismatch_is_compile_error() {
         fn main() -> i64 { return balances[true]; }
     ";
     let err = engine().execute(src, Fuel::new(1000), &kv).unwrap_err();
-    assert!(err.to_string().contains("expected i64"));
+    assert!(err.to_string().contains("expected int"));
 }
 
 #[test]

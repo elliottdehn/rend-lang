@@ -437,12 +437,22 @@ mod const_tag {
     pub const U128: u8 = 0x05;
     pub const BOOL: u8 = 0x06;
     pub const STR: u8 = 0x07;
+    pub const UINT: u8 = 0x08;
 }
 
 fn write_const(out: &mut Vec<u8>, c: &Const) {
     match c {
         Const::Int(n)  => {
             out.push(const_tag::INT);
+            let bytes = n.to_signed_bytes_be();
+            write_u32(out, bytes.len() as u32);
+            out.extend_from_slice(&bytes);
+        }
+        Const::UInt(n) => {
+            out.push(const_tag::UINT);
+            // Always non-negative — `to_signed_bytes_be` will give us
+            // a leading zero byte for the high-bit case, which is fine
+            // and round-trips correctly.
             let bytes = n.to_signed_bytes_be();
             write_u32(out, bytes.len() as u32);
             out.extend_from_slice(&bytes);
@@ -463,6 +473,11 @@ fn read_const(r: &mut Reader) -> Result<Const, Error> {
             let n = r.read_u32()? as usize;
             let bytes = r.take_bytes(n)?.to_vec();
             Const::Int(num_bigint::BigInt::from_signed_bytes_be(&bytes))
+        }
+        const_tag::UINT => {
+            let n = r.read_u32()? as usize;
+            let bytes = r.take_bytes(n)?.to_vec();
+            Const::UInt(num_bigint::BigInt::from_signed_bytes_be(&bytes))
         }
         const_tag::I32  => Const::I32(r.read_i32()?),
         const_tag::U32  => Const::U32(r.read_u32()?),
@@ -527,11 +542,13 @@ mod ty_tag {
     pub const INTERFACE: u8 = 0x1a;
     pub const PBTREE: u8 = 0x1b;
     pub const JSON: u8 = 0x1c;
+    pub const UINT: u8 = 0x1d;
 }
 
 fn write_type(out: &mut Vec<u8>, ty: &Type) {
     match ty {
         Type::Int => out.push(ty_tag::INT),
+        Type::UInt => out.push(ty_tag::UINT),
         Type::I32 => out.push(ty_tag::I32),
         Type::U32 => out.push(ty_tag::U32),
         Type::U64 => out.push(ty_tag::U64),
@@ -614,6 +631,7 @@ fn read_type(r: &mut Reader) -> Result<Type, Error> {
     let tag = r.read_u8()?;
     Ok(match tag {
         ty_tag::INT => Type::Int,
+        ty_tag::UINT => Type::UInt,
         ty_tag::I32 => Type::I32,
         ty_tag::U32 => Type::U32,
         ty_tag::U64 => Type::U64,

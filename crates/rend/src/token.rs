@@ -2,7 +2,11 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
-    Int(i64),
+    /// Bare integer literal — `42`, `1000000`, or with explicit
+    /// `i64` suffix. Arbitrary precision (`int` is `BigInt`).
+    Int(num_bigint::BigInt),
+    /// `42u` literal — arbitrary-precision non-negative integer.
+    UInt(num_bigint::BigInt),
     I32(i32),
     U32(u32),
     U64(u64),

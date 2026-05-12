@@ -100,7 +100,7 @@ fn arg_type_mismatch_is_compile_error() {
     ";
     let err = Engine::new().execute(src, Fuel::new(1000), &kv).unwrap_err();
     assert!(
-        err.to_string().contains("expected i64"),
+        err.to_string().contains("expected int"),
         "expected type-mismatch error; got: {err}",
     );
 }

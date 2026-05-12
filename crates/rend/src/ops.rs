@@ -54,23 +54,42 @@ macro_rules! int_arith {
     }};
 }
 
-/// Arbitrary-precision integer arithmetic for `Type::Int`. No
-/// overflow is possible at this layer (the values are unbounded);
-/// the only failure modes are division/modulo by zero and shifts by
-/// values that don't fit in `u32`. Comparisons and bitwise ops use
-/// `BigInt`'s built-in `Ord` / `BitAnd` / `BitOr` / `BitXor` impls.
-fn bigint_arith(op: BinOp, a: &BigInt, b: &BigInt, span: Span) -> Result<Value, Error> {
+/// Arbitrary-precision integer arithmetic for `Type::Int` /
+/// `Type::UInt`. Overflow can't happen at the BigInt layer; the
+/// failure modes are division/modulo by zero, shifts by values
+/// that don't fit in `u32`, and (for UInt only) subtraction that
+/// would produce a negative result.
+///
+/// `unsigned=true` selects UInt semantics: negative results from
+/// subtraction surface as a runtime error, and the wrapper variant
+/// returned by arithmetic stays `UInt`. `unsigned=false` is Int —
+/// values may be negative freely.
+fn bigint_arith(
+    op: BinOp,
+    a: &BigInt,
+    b: &BigInt,
+    span: Span,
+    unsigned: bool,
+) -> Result<Value, Error> {
     let div_zero = || Error::new(ErrorKind::Runtime, "division by zero", span);
     let bad_shift = || Error::new(ErrorKind::Runtime, "shift amount out of range", span);
+    let underflow = || Error::new(ErrorKind::Runtime, "uint underflow", span);
+    let wrap = |n: BigInt| -> Value {
+        if unsigned { Value::UInt(n) } else { Value::Int(n) }
+    };
     match op {
-        BinOp::Add => Ok(Value::Int(a + b)),
-        BinOp::Sub => Ok(Value::Int(a - b)),
-        BinOp::Mul => Ok(Value::Int(a * b)),
+        BinOp::Add => Ok(wrap(a + b)),
+        BinOp::Sub => {
+            let r = a - b;
+            if unsigned && r.is_negative() { return Err(underflow()); }
+            Ok(wrap(r))
+        }
+        BinOp::Mul => Ok(wrap(a * b)),
         BinOp::Div => {
-            if b.is_zero() { Err(div_zero()) } else { Ok(Value::Int(a / b)) }
+            if b.is_zero() { Err(div_zero()) } else { Ok(wrap(a / b)) }
         }
         BinOp::Mod => {
-            if b.is_zero() { Err(div_zero()) } else { Ok(Value::Int(a % b)) }
+            if b.is_zero() { Err(div_zero()) } else { Ok(wrap(a % b)) }
         }
         BinOp::Lt    => Ok(Value::Bool(a < b)),
         BinOp::Gt    => Ok(Value::Bool(a > b)),
@@ -78,25 +97,25 @@ fn bigint_arith(op: BinOp, a: &BigInt, b: &BigInt, span: Span) -> Result<Value, 
         BinOp::GtEq  => Ok(Value::Bool(a >= b)),
         BinOp::Eq    => Ok(Value::Bool(a == b)),
         BinOp::NotEq => Ok(Value::Bool(a != b)),
-        BinOp::BitAnd => Ok(Value::Int(a & b)),
-        BinOp::BitOr  => Ok(Value::Int(a | b)),
-        BinOp::BitXor => Ok(Value::Int(a ^ b)),
+        BinOp::BitAnd => Ok(wrap(a & b)),
+        BinOp::BitOr  => Ok(wrap(a | b)),
+        BinOp::BitXor => Ok(wrap(a ^ b)),
         BinOp::Shl => {
-            // BigInt's `<<` takes any usize-castable amount but
-            // negative shifts are meaningless. Reject them loudly
-            // so silent truncation never happens.
             if b.is_negative() { return Err(bad_shift()); }
             let n: u32 = b.to_u32().ok_or_else(bad_shift)?;
-            Ok(Value::Int(a << n))
+            Ok(wrap(a << n))
         }
         BinOp::Shr => {
             if b.is_negative() { return Err(bad_shift()); }
             let n: u32 = b.to_u32().ok_or_else(bad_shift)?;
-            Ok(Value::Int(a >> n))
+            Ok(wrap(a >> n))
         }
         other => Err(Error::new(
             ErrorKind::Runtime,
-            format!("operator {other:?} not defined for Int values"),
+            format!(
+                "operator {other:?} not defined for {} values",
+                if unsigned { "uint" } else { "int" },
+            ),
             span,
         )),
     }
@@ -113,7 +132,8 @@ pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, E
     };
 
     match (&l, &r) {
-        (Int(a),  Int(b))  => bigint_arith(op, a, b, span),
+        (Int(a),  Int(b))  => bigint_arith(op, a, b, span, false),
+        (UInt(a), UInt(b)) => bigint_arith(op, a, b, span, true),
         (I32(a),  I32(b))  => int_arith!(op, a, b, I32,  span),
         (U32(a),  U32(b))  => int_arith!(op, a, b, U32,  span),
         (U64(a),  U64(b))  => int_arith!(op, a, b, U64,  span),
@@ -139,6 +159,10 @@ pub fn eval_unary(op: UnOp, v: Value, span: Span) -> Result<Value, Error> {
     let overflow = || Error::new(ErrorKind::Runtime, "integer overflow", span);
     match (op, v) {
         (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
+        (UnOp::Neg, Value::UInt(n)) => {
+            if n.is_zero() { Ok(Value::UInt(n)) }
+            else { Err(Error::new(ErrorKind::Runtime, "uint underflow on negation", span)) }
+        }
         (UnOp::Neg, Value::I32(n)) => n.checked_neg().map(Value::I32).ok_or_else(overflow),
         (UnOp::Neg, Value::U32(0)) => Ok(Value::U32(0)),
         (UnOp::Neg, Value::U32(_)) => Err(overflow()),

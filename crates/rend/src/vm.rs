@@ -192,6 +192,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 Instr::LoadConst { dst, idx } => {
                     regs[dst as usize] = match &f.consts[idx as usize] {
                         Const::Int(n) => Value::int(n.clone()),
+                        Const::UInt(n) => Value::uint(n.clone()),
                         Const::I32(n) => Value::I32(*n),
                         Const::U32(n) => Value::U32(*n),
                         Const::U64(n) => Value::U64(*n),

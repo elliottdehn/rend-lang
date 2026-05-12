@@ -142,6 +142,34 @@ fn modulo_by_zero_is_runtime_error() {
 }
 
 #[test]
+fn uint_literal_and_arithmetic() {
+    assert_runs_to(
+        "fn main() -> uint { return 5u + 3u; }",
+        rend::Value::uint(8u32),
+    );
+}
+
+#[test]
+fn uint_arbitrary_precision() {
+    // 2^200, comfortably beyond i256 / u256 — uint just handles it.
+    let big = num_bigint::BigInt::from(1) << 200u32;
+    assert_runs_to(
+        "fn main() -> uint {
+            let x = 1u;
+            for i in 0..200 { x = x * 2u; }
+            return x;
+        }",
+        rend::Value::UInt(big),
+    );
+}
+
+#[test]
+fn uint_subtraction_underflow_is_runtime_error() {
+    let src = "fn main() -> uint { return 3u - 5u; }";
+    assert_errors(src, "uint underflow");
+}
+
+#[test]
 fn sized_integer_overflow_is_runtime_error() {
     // `int` / `i64` is arbitrary-precision now — adding past i64::MAX
     // is a valid operation that just produces a bigger BigInt. The
@@ -195,7 +223,7 @@ fn return_type_mismatch_is_compile_error() {
 fn arg_type_mismatch_is_compile_error() {
     let src = "entry fn add(a: i64, b: i64) -> i64 { return a + b; }
                fn main() -> i64 { return add(1, true); }";
-    assert_errors(src, "expected i64, got bool");
+    assert_errors(src, "expected int, got bool");
 }
 
 #[test]

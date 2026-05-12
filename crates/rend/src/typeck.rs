@@ -583,7 +583,7 @@ fn annotate_expr(
             }
         }
         // Leaves: nothing to descend into.
-        ExprKind::Int(_) | ExprKind::I32(_) | ExprKind::U32(_)
+        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::I32(_) | ExprKind::U32(_)
         | ExprKind::U64(_) | ExprKind::U128(_) | ExprKind::Bool(_)
         | ExprKind::Str(_) | ExprKind::Ident(_) | ExprKind::Prev => {}
     }
@@ -629,7 +629,7 @@ fn builtin_sigs() -> HashMap<String, FnSig> {
 
 fn is_storable(ty: &Type) -> bool {
     match ty {
-        Type::Int | Type::I32 | Type::U32 | Type::U64 | Type::U128
+        Type::Int | Type::UInt | Type::I32 | Type::U32 | Type::U64 | Type::U128
         | Type::Bool | Type::String | Type::Address | Type::Bytes => true,
         Type::Array(elem) => is_storable(elem),
         Type::Struct { fields, .. } => fields.iter().all(|(_, t)| is_storable(t)),
@@ -1943,6 +1943,7 @@ impl TypeChecker {
         }
         match &expr.kind {
             ExprKind::Int(_) => Ok(Type::Int),
+            ExprKind::UInt(_) => Ok(Type::UInt),
             ExprKind::I32(_) => Ok(Type::I32),
             ExprKind::U32(_) => Ok(Type::U32),
             ExprKind::U64(_) => Ok(Type::U64),
@@ -3173,7 +3174,7 @@ impl TypeChecker {
 }
 
 fn is_int(t: &Type) -> bool {
-    matches!(t, Type::Int | Type::I32 | Type::U32 | Type::U64 | Type::U128)
+    matches!(t, Type::Int | Type::UInt | Type::I32 | Type::U32 | Type::U64 | Type::U128)
 }
 
 fn check_binop(op: BinOp, l: &Type, r: &Type, span: Span) -> Result<Type, Error> {

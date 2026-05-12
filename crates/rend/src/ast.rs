@@ -239,8 +239,15 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
-    /// `i64`. Default integer type; literals like `42` have this type.
+    /// `int` / `i64`. Default integer type; bare numeric literals
+    /// like `42` have this type. Arbitrary precision — backed by
+    /// `BigInt`. Use sized types (`i32`, `u32`, `u64`, `u128`) when
+    /// fixed width matters.
     Int,
+    /// `uint`. Arbitrary-precision non-negative integer. Literals
+    /// with the `u` suffix (e.g. `42u`) have this type. Subtraction
+    /// that would go negative is a runtime error.
+    UInt,
     I32,
     U32,
     U64,
@@ -333,7 +340,7 @@ impl Type {
     /// Non-Copy types (currently just Resource) participate in affine analysis.
     pub fn is_copy(&self) -> bool {
         match self {
-            Type::Int | Type::I32 | Type::U32 | Type::U64 | Type::U128
+            Type::Int | Type::UInt | Type::I32 | Type::U32 | Type::U64 | Type::U128
             | Type::Bool | Type::Unit | Type::String | Type::Address | Type::Bytes => true,
             Type::Array(elem) => elem.is_copy(),
             Type::Set(elem) => elem.is_copy(),
@@ -376,7 +383,8 @@ impl Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Int => write!(f, "i64"),
+            Type::Int => write!(f, "int"),
+            Type::UInt => write!(f, "uint"),
             Type::I32 => write!(f, "i32"),
             Type::U32 => write!(f, "u32"),
             Type::U64 => write!(f, "u64"),
@@ -493,7 +501,8 @@ pub struct Expr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
-    Int(i64),
+    Int(num_bigint::BigInt),
+    UInt(num_bigint::BigInt),
     I32(i32),
     U32(u32),
     U64(u64),

@@ -389,6 +389,7 @@ fn check_expr(
 ) -> Result<Type, Error> {
     match &expr.kind {
         ExprKind::Int(_) => Ok(Type::Int),
+        ExprKind::UInt(_) => Ok(Type::UInt),
         ExprKind::I32(_) => Ok(Type::I32),
         ExprKind::U32(_) => Ok(Type::U32),
         ExprKind::U64(_) => Ok(Type::U64),

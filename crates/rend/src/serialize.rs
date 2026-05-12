@@ -36,6 +36,7 @@ const TAG_PVEC: u8 = 0x17;
 const TAG_INTERFACE: u8 = 0x18;
 const TAG_PBTREE: u8 = 0x19;
 const TAG_JSON: u8 = 0x1a;
+const TAG_UINT: u8 = 0x1b;
 
 pub fn serialize(value: &Value) -> Vec<u8> {
     match value {
@@ -48,6 +49,17 @@ pub fn serialize(value: &Value) -> Vec<u8> {
             let bytes = n.to_signed_bytes_be();
             let mut out = Vec::with_capacity(5 + bytes.len());
             out.push(TAG_INT);
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            out.extend_from_slice(&bytes);
+            out
+        }
+        Value::UInt(n) => {
+            // Same shape as Int. The variant tag (TAG_UINT) lets the
+            // deserializer route to `Type::UInt` so the value's
+            // non-negative invariant is preserved across reads.
+            let bytes = n.to_signed_bytes_be();
+            let mut out = Vec::with_capacity(5 + bytes.len());
+            out.push(TAG_UINT);
             out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             out.extend_from_slice(&bytes);
             out
@@ -221,6 +233,12 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
             if rest.len() != 4 + n_bytes { return None; }
             Some(Value::Int(num_bigint::BigInt::from_signed_bytes_be(&rest[4..])))
         }
+        (TAG_UINT, Type::UInt) => {
+            if rest.len() < 4 { return None; }
+            let n_bytes = u32::from_be_bytes(rest[..4].try_into().ok()?) as usize;
+            if rest.len() != 4 + n_bytes { return None; }
+            Some(Value::UInt(num_bigint::BigInt::from_signed_bytes_be(&rest[4..])))
+        }
         (TAG_I32, Type::I32) => {
             let arr: [u8; 4] = rest.try_into().ok()?;
             Some(Value::I32(i32::from_be_bytes(arr)))
@@ -359,7 +377,7 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
 fn sized_value(bytes: &[u8], ty: &Type) -> Option<usize> {
     let tag = *bytes.first()?;
     match (tag, ty) {
-        (TAG_INT, Type::Int) => {
+        (TAG_INT, Type::Int) | (TAG_UINT, Type::UInt) => {
             // Variable-length BigInt: 1 tag byte + 4 length bytes +
             // N data bytes.
             let len_bytes: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
@@ -439,6 +457,7 @@ pub fn is_default(value: &Value) -> bool {
     use num_traits::Zero;
     match value {
         Value::Int(n) if n.is_zero() => true,
+        Value::UInt(n) if n.is_zero() => true,
         Value::I32(0) => true,
         Value::U32(0) => true,
         Value::U64(0) => true,

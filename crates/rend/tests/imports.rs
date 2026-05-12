@@ -85,7 +85,7 @@ fn import_arg_type_mismatch_is_compile_error() {
         fn main() -> i64 { logn(true); return 0; }
     ";
     let err = engine.run(src, Fuel::new(1000)).unwrap_err();
-    assert!(err.to_string().contains("expected i64"), "got {err}");
+    assert!(err.to_string().contains("expected int"), "got {err}");
 }
 
 #[test]

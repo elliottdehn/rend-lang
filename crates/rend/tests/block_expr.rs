@@ -140,7 +140,7 @@ fn fn_body_implicit_return_type_must_match_decl() {
             true
         }
     ").unwrap_err();
-    assert!(err.to_string().contains("implicit return") || err.to_string().contains("expected i64"));
+    assert!(err.to_string().contains("implicit return") || err.to_string().contains("expected int"));
 }
 
 #[test]

@@ -10,6 +10,11 @@ pub enum Value {
     /// Sized variants (`I32`, `U32`, `U64`, `U128`) carry hardware
     /// integers for places where range and bit-width matter.
     Int(BigInt),
+    /// Arbitrary-precision non-negative integer. Stored as a
+    /// `BigInt` with a non-negative invariant maintained by the
+    /// arithmetic operators — subtraction that would go negative is
+    /// a runtime error. Literal form: `42u`.
+    UInt(BigInt),
     I32(i32),
     U32(u32),
     U64(u64),
@@ -113,10 +118,30 @@ impl Value {
         Value::Int(n.into())
     }
 
+    /// Construct `Value::UInt` from any integer kind that converts
+    /// into a `BigInt`. The caller is responsible for non-negativity
+    /// — passing a negative value here will panic in debug builds
+    /// via the `debug_assert`; release builds preserve the BigInt
+    /// (and the arithmetic ops will surface the violation later).
+    pub fn uint(n: impl Into<BigInt>) -> Self {
+        let v = n.into();
+        debug_assert!(
+            !num_traits::Signed::is_negative(&v),
+            "Value::uint constructed with negative BigInt: {v}",
+        );
+        Value::UInt(v)
+    }
+
     /// Extract a borrowed `BigInt` if this is an `Int`. Returns
     /// `None` for any other variant.
     pub fn as_int(&self) -> Option<&BigInt> {
         match self { Value::Int(n) => Some(n), _ => None }
+    }
+
+    /// Extract a borrowed `BigInt` if this is a `UInt`. Returns
+    /// `None` for any other variant.
+    pub fn as_uint(&self) -> Option<&BigInt> {
+        match self { Value::UInt(n) => Some(n), _ => None }
     }
 
     /// Default value for a given type — used when reading a state cell that
@@ -126,6 +151,7 @@ impl Value {
     pub fn default_for(ty: &Type) -> Value {
         match ty {
             Type::Int => Value::int(0),
+            Type::UInt => Value::uint(0u32),
             Type::I32 => Value::I32(0),
             Type::U32 => Value::U32(0),
             Type::U64 => Value::U64(0),
@@ -199,6 +225,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
+            Value::UInt(n) => write!(f, "{n}u"),
             Value::I32(n) => write!(f, "{n}i32"),
             Value::U32(n) => write!(f, "{n}u32"),
             Value::U64(n) => write!(f, "{n}u64"),

@@ -291,7 +291,7 @@ fn classify_if(ifs: &IfStmt, acc: &mut EffectClass, ctx: &Ctx) {
 
 fn classify_expr(expr: &Expr, acc: &mut EffectClass, ctx: &Ctx) {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::I32(_) | ExprKind::U32(_)
+        ExprKind::Int(_) | ExprKind::UInt(_) | ExprKind::I32(_) | ExprKind::U32(_)
         | ExprKind::U64(_) | ExprKind::U128(_) | ExprKind::Bool(_)
         | ExprKind::Str(_) | ExprKind::Prev => {}
         ExprKind::Ident(name) => {

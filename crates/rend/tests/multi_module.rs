@@ -161,7 +161,7 @@ fn cross_module_arg_type_mismatch_is_compile_error() {
     let err = Engine::new()
         .execute_main(&sources, "main", Fuel::new(1000), &kv)
         .unwrap_err();
-    assert!(err.to_string().contains("expected i64"), "got {err}");
+    assert!(err.to_string().contains("expected int"), "got {err}");
 }
 
 #[test]

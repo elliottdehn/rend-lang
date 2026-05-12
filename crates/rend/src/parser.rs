@@ -607,6 +607,7 @@ impl Parser {
                 self.advance();
                 match s.as_str() {
                     "i64" | "int" => Ok(Type::Int),
+                    "uint" => Ok(Type::UInt),
                     "i32" => Ok(Type::I32),
                     "u32" => Ok(Type::U32),
                     "u64" => Ok(Type::U64),
@@ -1377,20 +1378,22 @@ impl Parser {
                 // `expr.0` / `expr.1` — tuple index. `expr.name` —
                 // struct field. Disambiguated by the next token.
                 if let Token::Int(n) = self.peek_token().clone() {
-                    if n < 0 {
-                        return Err(Error::new(
+                    use num_traits::ToPrimitive;
+                    let idx = match n.to_usize() {
+                        Some(v) => v,
+                        None => return Err(Error::new(
                             ErrorKind::Parse,
-                            "tuple index must be non-negative",
+                            "tuple index out of range or negative",
                             self.cur_span(),
-                        ));
-                    }
+                        )),
+                    };
                     self.advance();
                     let end = self.tokens[self.pos.saturating_sub(1)].span.end;
                     let span = Span { start: e.span.start, end };
                     e = Expr {
                         kind: ExprKind::TupleIndex {
                             target: Box::new(e),
-                            index: n as usize,
+                            index: idx,
                         },
                         span,
                     };
@@ -1416,6 +1419,10 @@ impl Parser {
             Token::Int(n) => {
                 self.advance();
                 Ok(Expr { kind: ExprKind::Int(n), span })
+            }
+            Token::UInt(n) => {
+                self.advance();
+                Ok(Expr { kind: ExprKind::UInt(n), span })
             }
             Token::I32(n) => {
                 self.advance();
@@ -1865,7 +1872,7 @@ mod tests {
         let stmt = &m.functions[0].body.stmts[0];
         let Stmt::Return { value: Some(e), .. } = stmt else { panic!() };
         let ExprKind::Binary { op: BinOp::Add, lhs, rhs } = &e.kind else { panic!() };
-        assert!(matches!(lhs.kind, ExprKind::Int(1)));
+        assert!(matches!(&lhs.kind, ExprKind::Int(n) if n.to_string() == "1"));
         let ExprKind::Binary { op: BinOp::Mul, .. } = &rhs.kind else { panic!() };
     }
 

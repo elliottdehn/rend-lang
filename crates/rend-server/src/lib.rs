@@ -651,7 +651,7 @@ fn parse_hash(s: &str) -> Result<u128, ServerError> {
 fn value_to_json(v: &Value) -> serde_json::Value {
     use serde_json::Value as J;
     match v {
-        Value::Int(n) => {
+        Value::Int(n) | Value::UInt(n) => {
             // BigInt may exceed JSON Number precision. Try the common
             // fast paths first; if the value doesn't fit, render as
             // a decimal string. This keeps small ints small in the

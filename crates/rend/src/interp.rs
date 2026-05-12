@@ -1081,6 +1081,7 @@ impl<'a> Interp<'a> {
     fn eval(&self, expr: &Expr, scopes: &mut Vec<Scope>) -> Result<Value, Error> {
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::int(n.clone())),
+            ExprKind::UInt(n) => Ok(Value::uint(n.clone())),
             ExprKind::I32(n) => Ok(Value::I32(*n)),
             ExprKind::U32(n) => Ok(Value::U32(*n)),
             ExprKind::U64(n) => Ok(Value::U64(*n)),

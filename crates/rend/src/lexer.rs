@@ -204,7 +204,7 @@ impl<'a> Lexer<'a> {
         let digits_end = self.pos;
         let digits = &self.src[start..digits_end];
 
-        // Optional suffix: i32 / u32 / u64 / u128 / i64
+        // Optional suffix: i32 / u32 / u64 / u128 / i64 / u
         let suffix_start = self.pos;
         while let Some(c) = self.peek_byte() {
             if c.is_ascii_alphanumeric() {
@@ -217,8 +217,15 @@ impl<'a> Lexer<'a> {
 
         let span = Span { start, end: self.pos };
         match suffix {
-            "" | "i64" => digits.parse::<i64>().map(Token::Int).map_err(|_| {
-                Error::new(ErrorKind::Lex, format!("invalid i64 literal '{digits}'"), span)
+            "" | "i64" => digits.parse::<num_bigint::BigInt>().map(Token::Int).map_err(|_| {
+                Error::new(ErrorKind::Lex, format!("invalid int literal '{digits}'"), span)
+            }),
+            // `42u` → arbitrary-precision non-negative integer. The
+            // digits are already parsed as a non-negative literal
+            // (the leading `-` is a separate Minus token), so the
+            // BigInt is naturally non-negative.
+            "u" => digits.parse::<num_bigint::BigInt>().map(Token::UInt).map_err(|_| {
+                Error::new(ErrorKind::Lex, format!("invalid uint literal '{digits}'"), span)
             }),
             "i32" => digits.parse::<i32>().map(Token::I32).map_err(|_| {
                 Error::new(ErrorKind::Lex, format!("invalid i32 literal '{digits}'"), span)
@@ -335,7 +342,7 @@ mod tests {
 
     #[test]
     fn integer_literal() {
-        assert_eq!(toks("42"), vec![Token::Int(42), Token::Eof]);
+        assert_eq!(toks("42"), vec![Token::Int(num_bigint::BigInt::from(42i64)), Token::Eof]);
     }
 
     #[test]
@@ -370,7 +377,7 @@ mod tests {
     fn line_comment_consumes_to_newline() {
         assert_eq!(
             toks("// hello\n42"),
-            vec![Token::Int(42), Token::Eof],
+            vec![Token::Int(num_bigint::BigInt::from(42i64)), Token::Eof],
         );
     }
 
@@ -410,7 +417,7 @@ mod tests {
     #[test]
     fn span_covers_token() {
         let toks = tokenize("  42  ").unwrap();
-        assert_eq!(toks[0].token, Token::Int(42));
+        assert_eq!(toks[0].token, Token::Int(num_bigint::BigInt::from(42i64)));
         assert_eq!(toks[0].span.start, 2);
         assert_eq!(toks[0].span.end, 4);
     }
