@@ -287,12 +287,21 @@ fn default_expr_for_type(ty: &Type, span: crate::token::Span) -> Result<Expr, Er
         Type::Int    => ExprKind::Int(BigInt::from(0)),
         Type::UInt   => ExprKind::UInt(BigInt::from(0)),
         Type::String => ExprKind::Str(String::new()),
-        // Empty array literal of the element type isn't allowed by
-        // typeck (would itself need a typed binding), so for nested
-        // array elements we can't currently produce a default at
-        // the language level. Same for structs/enums/dicts/sets in
-        // slice 2 — these become slot defaults via raw Value (no
-        // expression path) in a future slice.
+        // Struct default: recurse into each field. Composes through
+        // nested structs as long as every leaf field is one of the
+        // primitive-defaultable types.
+        Type::Struct { name, fields, .. } => {
+            let mut field_exprs = Vec::with_capacity(fields.len());
+            for (fname, fty) in fields {
+                let default = default_expr_for_type(fty, span)?;
+                field_exprs.push((fname.clone(), default));
+            }
+            ExprKind::StructLit { name: name.clone(), fields: field_exprs }
+        }
+        // Element-type defaults for nested arrays / enums / dicts /
+        // sets / caps land in a future slice — they need a default
+        // expression path that doesn't go through the language-level
+        // literal grammar.
         _ => return Err(Error::new(
             ErrorKind::Type,
             format!("`arr<T>[N]` not yet supported for element type {ty}"),

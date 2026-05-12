@@ -184,33 +184,42 @@
 <span class="k">state</span> reverse: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;   <span class="c">// id → content</span>
 <span class="k">state</span> next_id: <span class="t">u64</span>;                 <span class="c">// sole intentionally-contended cell</span>
 
+<span class="k">struct</span> InternResult { id: <span class="t">u64</span>, fresh: <span class="t">bool</span> }
+
 <span class="c">// One read on a dedup hit; two writes on a miss. The slot comes</span>
 <span class="c">// from a caller-side `reserve`, so this function never contends</span>
 <span class="c">// on `next_id`. `s` is declared `` `string` `` — sticky — so any</span>
 <span class="c">// call site must supply a backtick-tagged value (or one that</span>
 <span class="c">// flowed through a sticky binding). Computed strings are</span>
 <span class="c">// rejected at typeck. Safety is structural, not patrolled.</span>
-<span class="k">entry fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+<span class="c">//</span>
+<span class="c">// Returns the canonical id plus a `fresh` flag — true when this</span>
+<span class="c">// call performed the insert, false on a dedup hit. Caller code</span>
+<span class="c">// can branch on `fresh` (e.g. to emit a "new entity" event only</span>
+<span class="c">// on real creations).</span>
+<span class="k">entry fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; InternResult {
     <span class="k">let</span> existing = forward[s];
-    <span class="k">if</span> existing &gt; <span class="n">0u64</span> { <span class="k">return</span> existing; }
+    <span class="k">if</span> existing &gt; <span class="n">0u64</span> {
+        <span class="k">return</span> InternResult { id: existing, fresh: <span class="k">false</span> };
+    }
     forward[s] = slot;
     reverse[slot] = s;
-    <span class="k">return</span> slot;
+    <span class="k">return</span> InternResult { id: slot, fresh: <span class="k">true</span> };
 }
 </code></pre>
 
   <h3 style="margin-top: 36px;">The transaction &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— per-request, JIT-synthesized</span></h3>
   <p>Each request gets its own <code>main</code> built from the incoming payload. The payload arrays are embedded as <em>explicit literals</em> so the parser refuses any code-shaped fragment; <code>reserve</code> does one atomic counter bump for the whole batch; the <code>parallel for</code> legs run in their own shadow transactions and hit disjoint pmap cells. If two legs raced on the same string, the merge re-runs the loser against the winner's write — no retry loops, no per-call subtransaction tax.</p>
-<pre><code><span class="k">fn</span> main() -&gt; [<span class="t">u64</span>] {
-    <span class="k">let</span> inputs = <span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>;
-    <span class="k">let</span> slots  = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
-    <span class="k">let</span> ids    = <span class="k">arr</span>&lt;<span class="t">u64</span>&gt;[<span class="n">4u64</span>];
+<pre><code><span class="k">fn</span> main() -&gt; [InternResult] {
+    <span class="k">let</span> inputs  = <span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>;
+    <span class="k">let</span> slots   = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
+    <span class="k">let</span> results = <span class="k">arr</span>&lt;InternResult&gt;[<span class="n">4u64</span>];
 
-    <span class="k">parallel for</span> (i, s) <span class="k">in</span> inputs <span class="k">to</span> ids {
+    <span class="k">parallel for</span> (i, s) <span class="k">in</span> inputs <span class="k">to</span> results {
         intern_at(s, slots[i])
     }
 
-    <span class="k">return</span> ids;
+    <span class="k">return</span> results;
 }
 </code></pre>
 </section>
@@ -228,32 +237,35 @@
 
   <h3 style="margin-top: 32px;">The stored procedure &nbsp;&nbsp;<span style="color: var(--muted); font-size: 13px; font-weight: 400;">— database/functions/intern_batch.sql</span></h3>
 <pre><code><span class="k">CREATE OR REPLACE FUNCTION</span> intern_batch(inputs <span class="t">TEXT</span>[])
-<span class="k">RETURNS</span> <span class="t">BIGINT</span>[]
+<span class="k">RETURNS</span> <span class="k">TABLE</span> (id <span class="t">BIGINT</span>, fresh <span class="t">BOOLEAN</span>)
 <span class="k">LANGUAGE</span> plpgsql <span class="k">AS</span> $$
 <span class="k">DECLARE</span>
-    result   <span class="t">BIGINT</span>[] := <span class="s">'{}'</span>;
     s        <span class="t">TEXT</span>;
+    new_id   <span class="t">BIGINT</span>;
     found_id <span class="t">BIGINT</span>;
 <span class="k">BEGIN</span>
     <span class="k">FOREACH</span> s <span class="k">IN ARRAY</span> inputs <span class="k">LOOP</span>
-        <span class="c">-- The CTE-with-UNION trick: ON CONFLICT DO NOTHING returns</span>
-        <span class="c">-- nothing on a duplicate, so we need a fallback SELECT to find</span>
-        <span class="c">-- the existing id. One statement doing two unrelated jobs</span>
-        <span class="c">-- because the language can't say either of them directly.</span>
-        <span class="k">WITH</span> ins <span class="k">AS</span> (
-            <span class="k">INSERT INTO</span> strings (content) <span class="k">VALUES</span> (s)
-            <span class="k">ON CONFLICT</span> (content) <span class="k">DO NOTHING</span>
-            <span class="k">RETURNING</span> id
-        )
-        <span class="k">SELECT</span> id <span class="k">INTO</span> found_id <span class="k">FROM</span> (
-            <span class="k">SELECT</span> id <span class="k">FROM</span> ins
-            <span class="k">UNION ALL</span>
-            <span class="k">SELECT</span> id <span class="k">FROM</span> strings <span class="k">WHERE</span> content = s
-            <span class="k">LIMIT</span> <span class="n">1</span>
-        ) sub;
-        result := array_append(result, found_id);
+        <span class="c">-- Try INSERT first. ON CONFLICT DO NOTHING returns no row</span>
+        <span class="c">-- on a duplicate, so `new_id` stays NULL — that's the only</span>
+        <span class="c">-- signal we have to distinguish a fresh insert from a hit.</span>
+        <span class="k">INSERT INTO</span> strings (content) <span class="k">VALUES</span> (s)
+        <span class="k">ON CONFLICT</span> (content) <span class="k">DO NOTHING</span>
+        <span class="k">RETURNING</span> strings.id <span class="k">INTO</span> new_id;
+
+        <span class="k">IF</span> new_id <span class="k">IS NOT NULL</span> <span class="k">THEN</span>
+            found_id := new_id;
+            fresh := <span class="k">TRUE</span>;
+            new_id := <span class="k">NULL</span>;   <span class="c">-- reset before next iteration</span>
+        <span class="k">ELSE</span>
+            <span class="c">-- Duplicate — fall back to SELECT to find the existing id.</span>
+            <span class="k">SELECT</span> strings.id <span class="k">INTO</span> found_id
+            <span class="k">FROM</span> strings <span class="k">WHERE</span> content = s;
+            fresh := <span class="k">FALSE</span>;
+        <span class="k">END IF</span>;
+
+        id := found_id;
+        <span class="k">RETURN NEXT</span>;
     <span class="k">END LOOP</span>;
-    <span class="k">RETURN</span> result;
 <span class="k">END</span>;
 $$;
 </code></pre>

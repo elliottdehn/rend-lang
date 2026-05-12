@@ -2749,7 +2749,14 @@ impl TypeChecker {
                         len.span,
                     ));
                 }
-                Ok(Type::Array(Box::new(elem_ty.clone())))
+                // Resolve struct references inside the element type.
+                // The parser stores `Type::Struct { name, fields: [] }`
+                // for unresolved struct refs; the module-level
+                // resolve pass doesn't visit expression-internal
+                // types, so we resolve inline here against
+                // `self.structs`.
+                let resolved = self.resolve_struct_refs(elem_ty);
+                Ok(Type::Array(Box::new(resolved)))
             }
             ExprKind::ExplicitLiteral(inner) => {
                 // Type-check the inner expression normally, then
@@ -3667,6 +3674,50 @@ impl TypeChecker {
     /// Type a block as an expression, returning the tail's type
     /// (or Unit if none). Body statements are checked in a clone of
     /// the env so the caller's view is preserved.
+    /// Walk a type and fill in empty `Type::Struct.fields` from the
+    /// checker's struct table. Mirrors the module-level resolution
+    /// pass but operates on expression-internal types that the
+    /// module pass doesn't visit (e.g. `arr<T>[N]`'s element type).
+    fn resolve_struct_refs(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Struct { name, fields, field_groups } if fields.is_empty() => {
+                if let Some(decl) = self.structs.get(name) {
+                    Type::Struct {
+                        name: name.clone(),
+                        fields: decl.iter()
+                            .map(|(n, t)| (n.clone(), self.resolve_struct_refs(t)))
+                            .collect(),
+                        field_groups: field_groups.clone(),
+                    }
+                } else {
+                    ty.clone()
+                }
+            }
+            Type::Array(elem) => Type::Array(Box::new(self.resolve_struct_refs(elem))),
+            Type::Set(elem) => Type::Set(Box::new(self.resolve_struct_refs(elem))),
+            Type::Dict { key, value } => Type::Dict {
+                key: Box::new(self.resolve_struct_refs(key)),
+                value: Box::new(self.resolve_struct_refs(value)),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(self.resolve_struct_refs(key)),
+                value: Box::new(self.resolve_struct_refs(value)),
+            },
+            Type::PMap { key, value } => Type::PMap {
+                key: Box::new(self.resolve_struct_refs(key)),
+                value: Box::new(self.resolve_struct_refs(value)),
+            },
+            Type::PBTree { key, value } => Type::PBTree {
+                key: Box::new(self.resolve_struct_refs(key)),
+                value: Box::new(self.resolve_struct_refs(value)),
+            },
+            Type::PVec { elem } => Type::PVec { elem: Box::new(self.resolve_struct_refs(elem)) },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|t| self.resolve_struct_refs(t)).collect()),
+            Type::ExplicitLiteral(inner) => Type::ExplicitLiteral(Box::new(self.resolve_struct_refs(inner))),
+            other => other.clone(),
+        }
+    }
+
     fn check_block_as_expr(&self, block: &Block, env: &Env) -> Result<Type, Error> {
         let mut local = env.clone();
         local.push(HashMap::new());
