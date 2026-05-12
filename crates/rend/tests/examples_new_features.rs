@@ -44,3 +44,37 @@ fn example_43_field_groups_keeps_balance_granular_and_profile_grouped() {
     let out = rend::run(&src).unwrap();
     assert_eq!(out, Value::U64(159));
 }
+
+#[test]
+fn example_44_event_handlers_fires_each_handler_on_every_emit() {
+    // Four `submit` calls × one `bump_total` handler = 4. Disjoint
+    // sibling handlers (`record_score`, `track_seen`) merge cleanly
+    // in parallel with no re-run.
+    let src = std::fs::read_to_string("examples/44_event_handlers.rd").unwrap();
+    let out = rend::run(&src).unwrap();
+    assert_eq!(out, Value::U64(4));
+}
+
+#[test]
+fn example_45_audit_plugin_cross_module_handler_records_every_transfer() {
+    // The `audit` module's `on bank::Transferred fn record` handler
+    // appends to a pmap. Three transfers in `main` → three entries.
+    use rend::{Engine, Fuel};
+    use std::collections::HashMap;
+    let bank  = std::fs::read_to_string("examples/45_audit_plugin/bank.rd").unwrap();
+    let audit = std::fs::read_to_string("examples/45_audit_plugin/audit.rd").unwrap();
+    let main_ = std::fs::read_to_string("examples/45_audit_plugin/main.rd").unwrap();
+    let mut sources = HashMap::new();
+    sources.insert("bank".to_string(), bank);
+    sources.insert("audit".to_string(), audit);
+    sources.insert("main".to_string(), main_);
+    let kv = rend::kv::InMemoryKv::new();
+    let out = Engine::new()
+        .execute_main(&sources, "main", Fuel::new(50_000), &kv)
+        .unwrap();
+    assert_eq!(out.result, Value::U64(3));
+    // The bank module never imports audit — the audit handler still
+    // ran. That's the decoupling guarantee the example demonstrates.
+    assert_eq!(out.events.len(), 3);
+    assert!(out.events.iter().all(|e| e.module == "bank" && e.name == "Transferred"));
+}
