@@ -72,6 +72,24 @@ fn example_48_multi_symbol_order_book_uses_three_field_composite() {
 }
 
 #[test]
+fn example_52_explicit_literals_inert_by_construction() {
+    // `` `<expr>` `` is a parse-time inert-literal check: the
+    // parser walks the inner expression and rejects anything
+    // outside the literal subset (primitives, struct literals
+    // with literal fields, array/JSON literals, `-<numeric>`).
+    // Identifier references, function calls, computing operators
+    // are all rejected with a clear span. Once validated, the
+    // value flows through typeck/compile/VM as an ordinary Value.
+    //
+    // Example submits three Order structs to a pvec book, each
+    // wrapped in `` `...` ``. The book's total value is
+    //   100*5 + 200*3 + 50*10 = 500 + 600 + 500 = 1600.
+    let src = std::fs::read_to_string("examples/52_explicit_literals.rd").unwrap();
+    let out = rend::run(&src).unwrap();
+    assert_eq!(out, Value::U64(1600));
+}
+
+#[test]
 fn example_51_reserve_plus_arr_plus_parallel_for_to_dispatch() {
     // Slice 2 of the parallel-for-to feature: `reserve N from
     // state` returns a fresh [u64] of reserved ids (one atomic
