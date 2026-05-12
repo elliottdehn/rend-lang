@@ -121,10 +121,12 @@ pub enum Value {
     /// leaf entries to yield one at a time.
     PMapCursor(Box<PMapCursor>),
     /// Transient streaming-iterator state for a sorted-trie
-    /// (`pbtree`) walk. Same shape as `PMapCursor`, distinct so
-    /// the runtime can't mix walks routed through different cell
-    /// namespaces.
-    PBTreeCursor(Box<PMapCursor>),
+    /// (`pbtree`) walk. Holds the *current root cell* + the
+    /// *last yielded key* rather than a path stack, so mutations
+    /// (inserts, deletes) during the walk don't invalidate the
+    /// cursor — every advance re-descends from the current root
+    /// to the smallest key strictly greater than `last_yielded`.
+    PBTreeCursor(Box<PBTreeStableCursor>),
 }
 
 /// Walk state for a streaming HAMT iteration. Each entry on
@@ -137,6 +139,25 @@ pub enum Value {
 pub struct PMapCursor {
     pub stack: Vec<(u128, usize)>,
     pub pending: Vec<(Value, Value)>,
+    pub key_ty: Type,
+    pub value_ty: Type,
+}
+
+/// Stable cursor for `pbtree` walks. Position is encoded as the
+/// last-yielded key (not a path of node pointers), so concurrent
+/// inserts/deletes during the walk don't invalidate it — each
+/// advance re-fetches the current root and descends to find the
+/// smallest key strictly greater than `last_yielded`. The first
+/// advance (with `last_yielded = None`) yields the smallest
+/// entry in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PBTreeStableCursor {
+    /// KV cell holding the current pbtree root hash. Re-read on
+    /// each advance so the cursor sees pending writes to the root.
+    pub root_cell: u128,
+    /// Most recent key yielded. `None` means "haven't yielded
+    /// anything yet — return the smallest entry next."
+    pub last_yielded: Option<Value>,
     pub key_ty: Type,
     pub value_ty: Type,
 }

@@ -405,6 +405,68 @@ fn range_at(
     }
 }
 
+/// Smallest entry strictly greater than `target`. `None` for
+/// `target` means "smallest entry in the tree." Returns `None`
+/// if no such entry exists. O(log N) per call (directed descent
+/// + at most one sibling-subtree backtrack at each ancestor when
+/// the leaf has nothing greater than target). Used by the stable
+/// pbtree walk cursor: re-seeking from the current root on every
+/// advance keeps iteration delete-safe.
+pub fn first_greater_than(
+    root: u128,
+    target: Option<&Value>,
+    tx: &mut Tx,
+    key_ty: &Type,
+    val_ty: &Type,
+) -> Option<(Value, Value)> {
+    if root == EMPTY { return None; }
+    first_greater_at(root, target, tx, key_ty, val_ty)
+}
+
+fn first_greater_at(
+    hash: u128,
+    target: Option<&Value>,
+    tx: &mut Tx,
+    key_ty: &Type,
+    val_ty: &Type,
+) -> Option<(Value, Value)> {
+    let node = read_node(tx, hash, key_ty, val_ty)?;
+    match node {
+        Node::Leaf { entries } => {
+            for (k, v) in entries {
+                let take = match target {
+                    None => true,
+                    Some(t) => compare_keys(&k, t) == std::cmp::Ordering::Greater,
+                };
+                if take { return Some((k, v)); }
+            }
+            None
+        }
+        Node::Inner { keys, children } => {
+            // Find the leftmost child that could contain a key > target.
+            // `keys[i]` is the smallest key in `children[i+1]`; equivalently,
+            // `children[i]` holds keys `< keys[i]` (for `i < keys.len()`).
+            // For target == None, start at child 0.
+            let start = match target {
+                None => 0,
+                Some(t) => keys
+                    .iter()
+                    .position(|k| compare_keys(k, t) == std::cmp::Ordering::Greater)
+                    .unwrap_or(keys.len()),
+            };
+            for (offset, child) in children.iter().enumerate().skip(start) {
+                // Only the *first* child we descend into needs the target
+                // filter — every later sibling's range is guaranteed > target.
+                let t = if offset == start { target } else { None };
+                if let Some(pair) = first_greater_at(*child, t, tx, key_ty, val_ty) {
+                    return Some(pair);
+                }
+            }
+            None
+        }
+    }
+}
+
 /// Walk every entry in sorted order. Used by full-walk builtins.
 pub fn entries(
     root: u128,

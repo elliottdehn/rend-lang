@@ -484,6 +484,46 @@ fn pbtree_with_u128_keys_sorts_in_natural_order() {
     assert_eq!(v, Value::U64(4));
 }
 
+// ---------- stable cursor across deletes ----------
+
+#[test]
+fn pbtree_iteration_survives_deletes_of_yielded_keys() {
+    // The for-in cursor re-seeks from the current root by
+    // last-yielded key on each step, so deleting the entry we
+    // just observed doesn't break the walk. Equivalent SQL
+    // semantics: a server-side cursor that survives the
+    // surrounding tx's own DELETEs.
+    //
+    // pbtree iteration yields *values*, so we set up the tree so
+    // each value is also a valid key (`log[k] = k`) and the
+    // `delete log[v]` line cleanly removes the entry we just
+    // observed.
+    use rend::{Engine, Fuel};
+    let src = r#"
+        state log: pbtree<u64, u64>;
+        fn main() -> u64 {
+            log[10u64] = 10u64;
+            log[20u64] = 20u64;
+            log[30u64] = 30u64;
+            log[40u64] = 40u64;
+            let total = 0u64;
+            for v in log {
+                total = total + v;
+                delete log[v];
+            }
+            return total;
+        }
+    "#;
+    // The interp materializes the iterator upfront, so for the
+    // stable-cursor guarantee we need the bytecode VM's
+    // streaming walk.
+    let kv = InMemoryKv::new();
+    let out = Engine::new()
+        .execute(src, Fuel::new(50_000), &kv)
+        .unwrap();
+    assert_eq!(out.result, Value::U64(10 + 20 + 30 + 40));
+}
+
 #[test]
 fn pbtree_with_u128_keys_supports_bit_inversion_for_desc() {
     // Bid book wants price DESC + time ASC. Encode by *bit-inverting*

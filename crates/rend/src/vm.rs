@@ -1419,21 +1419,12 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         crate::ast::Type::PBTree { key, value } => ((**key).clone(), (**value).clone()),
                         _ => unreachable!("PBTreeWalkInit on non-pbtree state"),
                     };
-                    let root_v = self.tx.read_cell(root_cell, &pbtree_ty);
-                    let root_v = self.tx.force(root_v);
-                    let root_hash = match root_v {
-                        Value::PBTree(h) => h,
-                        _ => crate::pbtree::EMPTY,
-                    };
-                    let mut cursor = crate::value::PMapCursor {
-                        stack: Vec::new(),
-                        pending: Vec::new(),
+                    let cursor = crate::value::PBTreeStableCursor {
+                        root_cell,
+                        last_yielded: None,
                         key_ty,
                         value_ty,
                     };
-                    if root_hash != crate::pbtree::EMPTY {
-                        cursor.stack.push((root_hash, 0));
-                    }
                     regs[dst as usize] = Value::PBTreeCursor(Box::new(cursor));
                 }
                 Instr::PBTreeWalkNext { cursor_reg, value_reg, end_offset } => {
@@ -1448,7 +1439,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             Span::default(),
                         )),
                     };
-                    let next = pbtree_walk_advance(cursor, &mut self.tx)?;
+                    let next = pbtree_walk_advance_stable(cursor, &mut self.tx);
                     regs[cursor_reg as usize] = owned;
                     match next {
                         Some((_, v)) => {
@@ -1795,38 +1786,39 @@ fn pmap_walk_advance(
     }
 }
 
-/// Advance a streaming sorted-trie cursor by one leaf entry. Same
-/// shape as `pmap_walk_advance` but routes through the `pbtree`
-/// module so node cells come from the pbtree namespace.
-fn pbtree_walk_advance(
-    cursor: &mut crate::value::PMapCursor,
+/// Advance a stable pbtree cursor by one entry. Position is the
+/// `last_yielded` key — every call re-reads the current root and
+/// descends to the smallest key strictly greater. That's
+/// O(log N) per step (no faster amortized than the old stack
+/// cursor for steady-state walks) but it's *delete-safe*: a
+/// `for x in pbtree { delete state[x]; }` loop keeps walking
+/// past the just-deleted entry, because the next advance just
+/// looks for "anything greater than the previous yield."
+fn pbtree_walk_advance_stable(
+    cursor: &mut crate::value::PBTreeStableCursor,
     tx: &mut Tx<'_>,
-) -> Result<Option<(Value, Value)>, Error> {
-    loop {
-        if let Some(pair) = cursor.pending.pop() {
-            return Ok(Some(pair));
-        }
-        let Some((node_hash, mut next_child)) = cursor.stack.pop() else {
-            return Ok(None);
-        };
-        let node = crate::pbtree::read_node(tx, node_hash, &cursor.key_ty, &cursor.value_ty);
-        match node {
-            None => continue,
-            Some(crate::pbtree::Node::Leaf { entries }) => {
-                // Yield in declaration (sorted) order — push reversed
-                // so .pop() returns the first.
-                cursor.pending = entries.into_iter().rev().collect();
-            }
-            Some(crate::pbtree::Node::Inner { children, .. }) => {
-                if next_child < children.len() {
-                    let child = children[next_child];
-                    next_child += 1;
-                    cursor.stack.push((node_hash, next_child));
-                    cursor.stack.push((child, 0));
-                }
-            }
-        }
+) -> Option<(Value, Value)> {
+    let pbtree_ty = crate::ast::Type::PBTree {
+        key: Box::new(cursor.key_ty.clone()),
+        value: Box::new(cursor.value_ty.clone()),
+    };
+    let root_v = tx.read_cell(cursor.root_cell, &pbtree_ty);
+    let root_v = tx.force(root_v);
+    let root_hash = match root_v {
+        Value::PBTree(h) => h,
+        _ => return None,
+    };
+    let next = crate::pbtree::first_greater_than(
+        root_hash,
+        cursor.last_yielded.as_ref(),
+        tx,
+        &cursor.key_ty,
+        &cursor.value_ty,
+    );
+    if let Some((k, _)) = &next {
+        cursor.last_yielded = Some(k.clone());
     }
+    next
 }
 
 /// Walk a `pmap` state slot end-to-end, returning every (key, value)

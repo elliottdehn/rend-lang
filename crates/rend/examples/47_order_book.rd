@@ -38,41 +38,28 @@ state fills:    pvec<Fill>;
 unique_index ask_book on asks.(price ASC,  placed_at ASC);
 unique_index bid_book on bids.(price DESC, placed_at ASC);
 
-// Best-priority resting order. Iteration is restarted on each call
-// so back-link deletes inside the match loop don't poison a
-// streaming cursor (stable-cursor follow-up will lift that).
-fn best_ask_id() -> u64 {
-    for id in ask_book { return id; }
-    return 0u64;
-}
-fn best_bid_id() -> u64 {
-    for id in bid_book { return id; }
-    return 0u64;
-}
-
 entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
     let buyer_id  = next_id  + 1u64;
     let buyer_seq = next_seq + 1u64;
     next_id  = buyer_id;
     next_seq = buyer_seq;
 
+    // Sweep the ask book in priority order. The pbtree cursor is
+    // *stable* across deletes — `delete asks[id]` auto-cleans the
+    // ask_book back-link, and the next iteration re-seeks past
+    // the just-yielded key from the (now updated) root. No manual
+    // re-fetch loop, no broken cursor.
     let remaining = qty;
-    while remaining > 0u64 {
-        let best = best_ask_id();
-        if best == 0u64 { break; }
-        let ask = asks[best];
+    for id in ask_book {
+        if remaining == 0u64 { break; }
+        let ask = asks[id];
         if ask.price > price { break; }
         let take = if ask.qty <= remaining { ask.qty } else { remaining };
         pvec_push(fills, Fill {
-            bid_id: buyer_id,
-            ask_id: ask.id,
-            price:  ask.price,
-            qty:    take,
-            ts:     buyer_seq,
+            bid_id: buyer_id, ask_id: ask.id,
+            price: ask.price, qty: take, ts: buyer_seq,
         });
         if ask.qty <= remaining {
-            // `delete asks[ask.id]` cascades through the index
-            // maintenance pass — no manual `delete ask_book[...]`.
             delete asks[ask.id];
             remaining = remaining - take;
         } else {
@@ -82,14 +69,9 @@ entry fn submit_buy(owner: Address, price: u64, qty: u64) -> u64 {
     }
 
     if remaining > 0u64 {
-        // The index maintenance picks up the (price, time) packing
-        // automatically and inserts a back-link into `bid_book`.
         bids[buyer_id] = Order {
-            id:        buyer_id,
-            price:     price,
-            qty:       remaining,
-            placed_at: buyer_seq,
-            owner:     owner,
+            id: buyer_id, price: price, qty: remaining,
+            placed_at: buyer_seq, owner: owner,
         };
     }
     return buyer_id;
@@ -102,18 +84,14 @@ entry fn submit_sell(owner: Address, price: u64, qty: u64) -> u64 {
     next_seq = seller_seq;
 
     let remaining = qty;
-    while remaining > 0u64 {
-        let best = best_bid_id();
-        if best == 0u64 { break; }
-        let bid = bids[best];
+    for id in bid_book {
+        if remaining == 0u64 { break; }
+        let bid = bids[id];
         if bid.price < price { break; }
         let take = if bid.qty <= remaining { bid.qty } else { remaining };
         pvec_push(fills, Fill {
-            bid_id: bid.id,
-            ask_id: seller_id,
-            price:  bid.price,
-            qty:    take,
-            ts:     seller_seq,
+            bid_id: bid.id, ask_id: seller_id,
+            price: bid.price, qty: take, ts: seller_seq,
         });
         if bid.qty <= remaining {
             delete bids[bid.id];
@@ -126,25 +104,20 @@ entry fn submit_sell(owner: Address, price: u64, qty: u64) -> u64 {
 
     if remaining > 0u64 {
         asks[seller_id] = Order {
-            id:        seller_id,
-            price:     price,
-            qty:       remaining,
-            placed_at: seller_seq,
-            owner:     owner,
+            id: seller_id, price: price, qty: remaining,
+            placed_at: seller_seq, owner: owner,
         };
     }
     return seller_id;
 }
 
 entry view fn best_bid_price() -> u64 {
-    let id = best_bid_id();
-    if id == 0u64 { return 0u64; }
-    return bids[id].price;
+    for id in bid_book { return bids[id].price; }
+    return 0u64;
 }
 entry view fn best_ask_price() -> u64 {
-    let id = best_ask_id();
-    if id == 0u64 { return 0u64; }
-    return asks[id].price;
+    for id in ask_book { return asks[id].price; }
+    return 0u64;
 }
 entry view fn fill_count() -> u64 { return pvec_len(fills); }
 
