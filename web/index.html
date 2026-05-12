@@ -195,7 +195,10 @@
 <span class="c">// If two legs interned the same string, the merge re-runs the loser</span>
 <span class="c">// against the winner's write — it observes the existing id and</span>
 <span class="c">// returns it. No retry loops, no per-call subtransaction tax.</span>
-<span class="k">fn</span> main() -&gt; <span class="t">u64</span> {
+<span class="c">//</span>
+<span class="c">// `main` returns whatever shape the request needs — here, the array</span>
+<span class="c">// of canonical ids the caller can use to look the strings back up.</span>
+<span class="k">fn</span> main() -&gt; [<span class="t">u64</span>] {
     <span class="k">let</span> slots = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
 
     <span class="k">parallel</span> {
@@ -205,8 +208,7 @@
         <span class="k">let</span> id_d = intern_at(<span class="k">`</span><span class="s">"delta"</span><span class="k">`</span>, slots[<span class="n">3i64</span>]);
     }
 
-    <span class="c">// Canonical ids — `id_a` is "alpha" regardless of which leg won.</span>
-    <span class="k">return</span> id_a + id_b + id_c + id_d;
+    <span class="k">return</span> [id_a, id_b, id_c, id_d];
 }
 </code></pre>
   <p class="subtle" style="margin-top: 20px;">The same algorithm in SQL is a CTE wrapping <code>INSERT&nbsp;...&nbsp;ON&nbsp;CONFLICT&nbsp;DO&nbsp;NOTHING&nbsp;RETURNING&nbsp;id</code> with a <code>UNION&nbsp;ALL&nbsp;SELECT</code> fallback — one statement doing two unrelated jobs because the language can't say either of them directly — plus a stored procedure to make it composable, plus exception handling that allocates a subtransaction per call, plus a retry loop in the application. Stored procedures of this shape are how every non-trivial Supabase project ends up with a <code>database/functions/*.sql</code> directory nobody loves.</p>
