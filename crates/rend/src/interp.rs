@@ -137,6 +137,43 @@ impl<'a> Interp<'a> {
         self.state_defaults.contains_key(name)
     }
 
+    /// Drain the tx's pending-emit queue, dispatching every matching
+    /// handler in stable declaration order. Each handler runs
+    /// serially against the live tx — the interp's reference path
+    /// doesn't try to parallelize, but the observable behavior
+    /// matches the bytecode VM's parallel scheduler.
+    pub fn drain_pending_emits(&self) -> Result<(), Error> {
+        loop {
+            let batch = self.tx.borrow_mut().take_pending_emits();
+            if batch.is_empty() {
+                return Ok(());
+            }
+            let emit_module = self
+                .module
+                .name
+                .clone()
+                .unwrap_or_else(|| "main".to_string());
+            for emit in batch {
+                let handler_names: Vec<String> = self
+                    .module
+                    .handlers
+                    .iter()
+                    .filter(|h| {
+                        h.event_type == emit.struct_name
+                            && h.event_module
+                                .as_deref()
+                                .map(|m| m == emit.module)
+                                .unwrap_or(emit.module == emit_module)
+                    })
+                    .map(|h| h.fn_def.name.clone())
+                    .collect();
+                for hname in handler_names {
+                    let _ = self.call(&hname, vec![emit.value.clone()])?;
+                }
+            }
+        }
+    }
+
     pub fn call(&self, name: &str, args: Vec<Value>) -> Result<Value, Error> {
         // User-defined sum/max/min shadow the builtin (matches typeck +
         // compile resolution). Other builtins still win unconditionally.
@@ -564,34 +601,33 @@ impl<'a> Interp<'a> {
                 Ok(Flow::Normal(Value::Unit))
             }
             Stmt::Emit { value, span } => {
+                // Interp is serial reference. Log the event then
+                // dispatch handlers inline in declaration order —
+                // observably identical to the bytecode VM's
+                // parallel scheduler when handlers don't conflict.
                 let v = self.eval(value, scopes)?;
                 let struct_val = v.clone();
-                let (struct_name, fields) = match v {
-                    Value::Struct { name, fields } => (name, fields),
+                let struct_name = match &v {
+                    Value::Struct { name, .. } => name.clone(),
                     other => return Err(Error::new(
                         ErrorKind::Runtime,
                         format!("emit expected a struct value, got {other}"),
                         *span,
                     )),
                 };
-                let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
-                self.tx.borrow_mut().emit(crate::tx::EmittedEvent {
-                    module: self.module.name.clone().unwrap_or_else(|| "main".to_string()),
-                    name: struct_name.clone(),
-                    args,
-                });
-                // Dispatch handlers bound to this struct type in
-                // declaration order. The interp is single-module:
-                // only handlers whose `event_module` is `None` (or
-                // matches the current module name) fire. Handlers
-                // recurse through the same Stmt::Emit if they emit
-                // more events, so chains and cycles fall out
-                // naturally (cycles end when fuel runs out).
                 let emit_module = self
                     .module
                     .name
                     .clone()
                     .unwrap_or_else(|| "main".to_string());
+                if let Value::Struct { fields, .. } = v {
+                    let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
+                    self.tx.borrow_mut().emit(crate::tx::EmittedEvent {
+                        module: emit_module.clone(),
+                        name: struct_name.clone(),
+                        args,
+                    });
+                }
                 let handler_names: Vec<String> = self
                     .module
                     .handlers

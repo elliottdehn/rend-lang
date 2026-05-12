@@ -302,6 +302,64 @@ fn cross_module_handler_works_through_artifact_deps() {
 }
 
 #[test]
+fn conflicting_parallel_handlers_resolve_via_stable_order_rerun() {
+    // Two handlers on the same event both mutate the same counter.
+    // The speculative scheduler runs them in parallel against the
+    // pre-emit state, then notices the read-set overlap and re-runs
+    // the second handler against the first's merged write. The
+    // observable result is identical to serial-in-stable-order:
+    //   first  sees count=0, writes 100
+    //   second sees count=100, writes 100 + 50 = 150
+    let kv = rend::kv::InMemoryKv::new();
+    let src = "
+        struct Tick { unused: i64 }
+        state count: i64;
+        on Tick fn first(t: Tick) {
+            let _ = t.unused;
+            count = count + 100;
+        }
+        on Tick fn second(t: Tick) {
+            let _ = t.unused;
+            count = count + 50;
+        }
+        fn main() -> i64 {
+            emit Tick { unused: 0 };
+            return count;
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
+    assert_eq!(out.result, Value::int(150i64));
+}
+
+#[test]
+fn disjoint_parallel_handlers_merge_without_rerun() {
+    // Two handlers on the same event touch disjoint state cells.
+    // The scheduler runs them in parallel and merges both deltas
+    // cleanly — no conflict, no re-run. Observable result: both
+    // counters bumped independently.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = "
+        struct Tick { unused: i64 }
+        state alice: i64;
+        state bob: i64;
+        on Tick fn bump_alice(t: Tick) {
+            let _ = t.unused;
+            alice = alice + 7;
+        }
+        on Tick fn bump_bob(t: Tick) {
+            let _ = t.unused;
+            bob = bob + 3;
+        }
+        fn main() -> i64 {
+            emit Tick { unused: 0 };
+            return alice * 100 + bob;
+        }
+    ";
+    let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
+    assert_eq!(out.result, Value::int(703i64));
+}
+
+#[test]
 fn cyclic_handler_chain_terminates_via_fuel() {
     // A → emit B → handler emits A → handler emits B → ...
     // The chain is unbounded; fuel exhaustion is the safety net.

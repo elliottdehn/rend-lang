@@ -4,12 +4,39 @@
 //! time the host re-fetches each read key, validates the observed value still
 //! holds, and applies the writes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::ast::Type;
 use crate::kv::Kv;
 use crate::serialize::deserialize;
 use crate::value::Value;
+
+/// One queued event awaiting handler dispatch. Pushed by `Instr::Emit`
+/// / `Stmt::Emit`; drained by the engine's handler scheduler after
+/// the executing fn returns. Both the emitting module and the
+/// struct's full value are recorded so the dispatch step can
+/// rebuild handler args and form the `"<module>::<struct>"` lookup
+/// key.
+#[derive(Debug, Clone)]
+pub struct PendingEmit {
+    pub module: String,
+    pub struct_name: String,
+    pub value: Value,
+}
+
+/// Per-handler delta extracted from a shadow `Tx`. The scheduler
+/// collects one of these per parallel-worker run, then folds them
+/// back into the parent `Tx` in stable declaration order.
+#[derive(Debug, Default)]
+pub struct HandlerDelta {
+    pub reads: HashMap<u128, Value>,
+    pub writes: HashMap<u128, Value>,
+    pub events: Vec<EmittedEvent>,
+    pub pending: VecDeque<PendingEmit>,
+    pub node_cells_written: std::collections::HashSet<u128>,
+    pub pmap_types: HashMap<u128, (Type, Type)>,
+    pub pvec_types: HashMap<u128, Type>,
+}
 
 /// Per-transaction context the host populates before invoking the VM.
 /// Holds the values exposed via `msg_sender()`, `block_timestamp()`,
@@ -45,6 +72,12 @@ pub struct EmittedEvent {
 
 pub struct Tx<'a> {
     kv: &'a dyn Kv,
+    /// `Some` for *shadow* transactions spun up by the parallel
+    /// handler scheduler. Reads fall through to the parent's writes
+    /// and then reads if the local maps don't have the key. Writes
+    /// always go to the local maps so the parent stays immutable
+    /// while parallel handlers run. Root transactions have `None`.
+    parent: Option<&'a Tx<'a>>,
     /// First-observed value at each read key. Used by the host for OCC
     /// validation; the value's type tag is preserved so re-reads can be
     /// canonically re-serialized for byte comparison if desired.
@@ -52,6 +85,11 @@ pub struct Tx<'a> {
     /// Pending writes; later writes for the same key overwrite earlier ones.
     /// Reads of a written key see the in-flight value (read-your-writes).
     writes: HashMap<u128, Value>,
+    /// Events queued for handler dispatch. `Instr::Emit` /
+    /// `Stmt::Emit` push here; the engine's scheduler drains the
+    /// queue after the current fn returns, running matching handlers
+    /// in parallel batches with stable-order conflict re-run.
+    pending_emits: VecDeque<PendingEmit>,
     /// When true, primitive `read_typed` calls queue the read and
     /// return a `Value::Pending(handle)` instead of going to the KV.
     /// `force` (called at consume points) flushes the queue with one
@@ -137,8 +175,10 @@ impl<'a> Tx<'a> {
     pub fn new_with_context(kv: &'a dyn Kv, context: TxContext) -> Self {
         Self {
             kv,
+            parent: None,
             reads: HashMap::new(),
             writes: HashMap::new(),
+            pending_emits: VecDeque::new(),
             lazy: false,
             pending: Vec::new(),
             resolved: HashMap::new(),
@@ -151,6 +191,91 @@ impl<'a> Tx<'a> {
             node_cells_written: std::collections::HashSet::new(),
             pending_walks: Vec::new(),
         }
+    }
+
+    /// Open a *shadow* transaction over `parent`. Reads fall through
+    /// to `parent`'s writes-then-reads-then-KV chain; writes go to
+    /// the shadow's local maps. The scheduler runs each handler in
+    /// its own shadow so parallel workers don't see each other's
+    /// pending writes — no cloning of the parent's read/write maps.
+    pub fn shadow_of(parent: &'a Tx<'a>) -> Self {
+        Self {
+            kv: parent.kv,
+            parent: Some(parent),
+            reads: HashMap::new(),
+            writes: HashMap::new(),
+            pending_emits: VecDeque::new(),
+            lazy: parent.lazy,
+            pending: Vec::new(),
+            resolved: HashMap::new(),
+            next_handle: parent.next_handle,
+            events: Vec::new(),
+            context: parent.context.clone(),
+            nore_active: parent.nore_active.clone(),
+            pmap_types: HashMap::new(),
+            pvec_types: HashMap::new(),
+            node_cells_written: std::collections::HashSet::new(),
+            pending_walks: Vec::new(),
+        }
+    }
+
+    /// Consume the shadow and return its accumulated delta. The
+    /// parent merges this in declaration order with conflict re-run.
+    pub fn into_delta(self) -> HandlerDelta {
+        HandlerDelta {
+            reads: self.reads,
+            writes: self.writes,
+            events: self.events,
+            pending: self.pending_emits,
+            node_cells_written: self.node_cells_written,
+            pmap_types: self.pmap_types,
+            pvec_types: self.pvec_types,
+        }
+    }
+
+    /// Fold a shadow's accumulated delta into this Tx. Reads use
+    /// first-observed semantics (don't overwrite a value the parent
+    /// already saw); writes always overwrite. Events + pending emits
+    /// append.
+    pub fn merge_delta(&mut self, delta: HandlerDelta) {
+        for (k, v) in delta.reads {
+            self.reads.entry(k).or_insert(v);
+        }
+        for (k, v) in delta.writes {
+            self.writes.insert(k, v);
+        }
+        self.events.extend(delta.events);
+        self.pending_emits.extend(delta.pending);
+        self.node_cells_written.extend(delta.node_cells_written);
+        self.pmap_types.extend(delta.pmap_types);
+        self.pvec_types.extend(delta.pvec_types);
+    }
+
+    /// Push a pending event onto the scheduler queue.
+    pub fn enqueue_emit(&mut self, emit: PendingEmit) {
+        self.pending_emits.push_back(emit);
+    }
+
+    /// Drain every queued emit. Used by the engine's handler
+    /// scheduler between batches.
+    pub fn take_pending_emits(&mut self) -> VecDeque<PendingEmit> {
+        std::mem::take(&mut self.pending_emits)
+    }
+
+    pub fn has_pending_emits(&self) -> bool {
+        !self.pending_emits.is_empty()
+    }
+
+    /// Look up a key in the parent overlay (writes then reads,
+    /// chained upward). Returns `None` if no ancestor has it.
+    fn parent_lookup(&self, key: u128) -> Option<Value> {
+        let mut p = self.parent;
+        while let Some(t) = p {
+            if let Some(v) = t.writes.get(&key) { return Some(v.clone()); }
+            if let Some(v) = t.reads.get(&key) { return Some(v.clone()); }
+            p = t.parent;
+        }
+        None
     }
 
     /// Record that `cell` was written as a persistent-collection
@@ -260,14 +385,30 @@ impl<'a> Tx<'a> {
     pub fn flush_pending(&mut self) {
         if self.pending.is_empty() { return; }
         let pending = std::mem::take(&mut self.pending);
-        let keys: Vec<u128> = pending.iter().map(|p| p.key).collect();
+        // Shadow Tx: try the parent overlay before issuing a KV
+        // round-trip. Parent writes shadow KV, so a lazy read of a
+        // freshly-emitted value resolves locally.
+        let mut to_fetch: Vec<(usize, PendingRead)> = Vec::new();
+        let mut resolved_inline: Vec<(PendingRead, Value)> = Vec::new();
+        for (i, p) in pending.into_iter().enumerate() {
+            if let Some(v) = self.parent_lookup(p.key) {
+                resolved_inline.push((p, v));
+            } else {
+                to_fetch.push((i, p));
+            }
+        }
+        let keys: Vec<u128> = to_fetch.iter().map(|(_, p)| p.key).collect();
         let bytes = self.kv.get_many(&keys);
-        for (p, bz) in pending.into_iter().zip(bytes.into_iter()) {
+        for ((_, p), bz) in to_fetch.into_iter().zip(bytes.into_iter()) {
             let v = match bz {
                 Some(b) => crate::serialize::deserialize(&b, &p.ty)
                     .unwrap_or_else(|| Value::default_for(&p.ty)),
                 None => Value::default_for(&p.ty),
             };
+            self.reads.insert(p.key, v.clone());
+            self.resolved.insert(p.id, v);
+        }
+        for (p, v) in resolved_inline {
             self.reads.insert(p.key, v.clone());
             self.resolved.insert(p.id, v);
         }
@@ -283,6 +424,13 @@ impl<'a> Tx<'a> {
         }
         if let Some(v) = self.reads.get(&key) {
             return v.clone();
+        }
+        // Shadow Tx: fall through to ancestor writes/reads before
+        // going to KV. The looked-up value is cached locally so
+        // repeated reads stay O(1) within the shadow.
+        if let Some(v) = self.parent_lookup(key) {
+            self.reads.insert(key, v.clone());
+            return v;
         }
         let observed = match self.kv.get(key) {
             Some(bytes) => deserialize(&bytes, ty).unwrap_or_else(|| default.clone()),
@@ -304,6 +452,10 @@ impl<'a> Tx<'a> {
     pub fn read_cell(&mut self, key: u128, ty: &Type) -> Value {
         if let Some(v) = self.writes.get(&key) { return v.clone(); }
         if let Some(v) = self.reads.get(&key) { return v.clone(); }
+        if let Some(v) = self.parent_lookup(key) {
+            self.reads.insert(key, v.clone());
+            return v;
+        }
         if self.lazy {
             let id = self.next_handle;
             self.next_handle += 1;
@@ -366,7 +518,9 @@ impl<'a> Tx<'a> {
         }
 
         // Step 2: split leaves into "already known" vs "must fetch".
-        // Pending writes shadow KV; prior reads are cached.
+        // Pending writes shadow KV; prior reads are cached. Shadow
+        // Txs also peek at the parent overlay chain before falling
+        // through to KV.
         let mut leaf_values: Vec<Option<Value>> = Vec::with_capacity(leaf_keys.len());
         let mut to_fetch_idx: Vec<usize> = Vec::new();
         let mut to_fetch_keys: Vec<u128> = Vec::new();
@@ -375,6 +529,9 @@ impl<'a> Tx<'a> {
                 leaf_values.push(Some(v.clone()));
             } else if let Some(v) = self.reads.get(k) {
                 leaf_values.push(Some(v.clone()));
+            } else if let Some(v) = self.parent_lookup(*k) {
+                self.reads.insert(*k, v.clone());
+                leaf_values.push(Some(v));
             } else {
                 leaf_values.push(None);
                 to_fetch_idx.push(i);

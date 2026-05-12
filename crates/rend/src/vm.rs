@@ -87,9 +87,6 @@ pub fn run_world(
     let mut state = VmState { fuel: fuel.remaining, host, tx, modules };
     let result = state.call(main_idx, fn_idx, args);
     let result = result.map(|v| state.tx.force(v));
-    // Drain any reads the program issued but didn't consume — the OCC
-    // read set must reflect every observation the tx made, even
-    // unconsumed ones, to match eager-mode validation.
     state.tx.flush_pending();
     state.tx.set_lazy(false);
     result
@@ -107,6 +104,88 @@ impl<'a, 'tx> VmState<'a, 'tx> {
     /// anything reachable through it) is a `Value::Pending`. Caches
     /// the result back into the register so subsequent forces of the
     /// same register are O(1).
+    /// Parallel handler dispatch for one emit. Every matching
+    /// handler across all loaded modules runs in its own shadow
+    /// `Tx` over the current parent — no read/write-set cloning,
+    /// just an immutable borrow chain — and the resulting deltas
+    /// merge back in stable declaration order. A handler whose read
+    /// set was invalidated by a prior merged write re-runs against
+    /// the now-current parent state (intra-tx OCC).
+    fn dispatch_handlers_parallel(
+        &mut self,
+        emit_module: &str,
+        struct_name: &str,
+        struct_val: &Value,
+    ) -> Result<(), Error> {
+        use rayon::prelude::*;
+        let key = format!("{emit_module}::{struct_name}");
+        // Resolve dispatch list across all modules in stable order.
+        let mut dispatch: Vec<(usize, u16)> = Vec::new();
+        for (mi, m) in self.modules.iter().enumerate() {
+            if let Some(idxs) = m.handler_dispatch.get(&key) {
+                for h_idx in idxs {
+                    dispatch.push((mi, *h_idx));
+                }
+            }
+        }
+        if dispatch.is_empty() {
+            return Ok(());
+        }
+        // Parallel speculative run. Each task forks a shadow Tx
+        // from the parent and runs its assigned handler. Captures
+        // are `Sync` references; no cloning of read/write sets.
+        let fuel_budget = self.fuel;
+        let host = self.host;
+        let modules = self.modules;
+        let parent: &Tx = &*self.tx;
+        let results: Vec<Result<(crate::tx::HandlerDelta, u64), Error>> = dispatch
+            .par_iter()
+            .map(|(mi, hi)| -> Result<(crate::tx::HandlerDelta, u64), Error> {
+                let mut shadow = Tx::shadow_of(parent);
+                let mut sub = VmState {
+                    fuel: fuel_budget,
+                    host,
+                    tx: &mut shadow,
+                    modules,
+                };
+                sub.call(*mi, *hi as usize, std::slice::from_ref(struct_val))?;
+                let fuel_used = fuel_budget.saturating_sub(sub.fuel);
+                Ok((shadow.into_delta(), fuel_used))
+            })
+            .collect();
+        // Stable-order merge with conflict re-run.
+        let mut batch_writes: std::collections::HashSet<u128> =
+            std::collections::HashSet::new();
+        for (i, res) in results.into_iter().enumerate() {
+            let (delta, fuel_used) = res?;
+            self.fuel = self.fuel.saturating_sub(fuel_used);
+            let conflict = delta.reads.keys().any(|k| batch_writes.contains(k));
+            if conflict {
+                // Re-run against the now-merged parent. Costs
+                // additional fuel — billed serially.
+                let (mi, hi) = dispatch[i];
+                let mut shadow = Tx::shadow_of(&*self.tx);
+                let pre = self.fuel;
+                let mut sub = VmState {
+                    fuel: pre,
+                    host: self.host,
+                    tx: &mut shadow,
+                    modules: self.modules,
+                };
+                sub.call(mi, hi as usize, std::slice::from_ref(struct_val))?;
+                let rerun_used = pre.saturating_sub(sub.fuel);
+                self.fuel = self.fuel.saturating_sub(rerun_used);
+                let new_delta = shadow.into_delta();
+                batch_writes.extend(new_delta.writes.keys().copied());
+                self.tx.merge_delta(new_delta);
+            } else {
+                batch_writes.extend(delta.writes.keys().copied());
+                self.tx.merge_delta(delta);
+            }
+        }
+        Ok(())
+    }
+
     fn force_reg(&mut self, regs: &mut [Value], r: u16) -> Value {
         let v = self.tx.force(regs[r as usize].clone());
         regs[r as usize] = v.clone();
@@ -787,14 +866,15 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     };
                 }
                 Instr::Emit { value } => {
-                    // Force the struct value fully, then split it
-                    // into (name, fields) for the emit log. Typeck
-                    // guarantees the value is a Value::Struct; anything
-                    // else is a runtime invariant violation.
+                    // Force, log, then dispatch handlers in parallel
+                    // shadow-Tx batches. The parallel scheduler
+                    // collects deltas and merges them in stable
+                    // declaration order with conflict re-run — see
+                    // `dispatch_handlers_parallel` below.
                     let v = self.force_reg(&mut regs, value);
                     let struct_val = v.clone();
-                    let (struct_name, fields) = match v {
-                        Value::Struct { name, fields } => (name, fields),
+                    let struct_name = match &v {
+                        Value::Struct { name, .. } => name.clone(),
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
                             format!("emit expected a struct value, got {other}"),
@@ -802,40 +882,19 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         )),
                     };
                     let emit_module = module.name.clone();
-                    let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
-                    self.tx.emit(crate::tx::EmittedEvent {
-                        module: emit_module.clone(),
-                        name: struct_name.clone(),
-                        args,
-                    });
-                    // Dispatch: every loaded module's
-                    // `handler_dispatch` is keyed by
-                    // `"<emitter>::<struct>"`, so a single canonical
-                    // lookup picks up both the emitter's own local
-                    // handlers and any cross-module `on m::T fn ...`
-                    // handlers bound to the same identity. Each
-                    // module runs its matching handlers in
-                    // declaration order; the order across modules
-                    // is the engine's module-load order.
-                    let key = format!("{emit_module}::{struct_name}");
-                    // Collect (target_module_idx, handler_fn_idx)
-                    // pairs before we start calling, since `self.call`
-                    // borrows `self` mutably.
-                    let mut dispatch: Vec<(usize, u16)> = Vec::new();
-                    for (mi, m) in self.modules.iter().enumerate() {
-                        if let Some(idxs) = m.handler_dispatch.get(&key) {
-                            for h_idx in idxs {
-                                dispatch.push((mi, *h_idx));
-                            }
-                        }
+                    if let Value::Struct { fields, .. } = v {
+                        let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
+                        self.tx.emit(crate::tx::EmittedEvent {
+                            module: emit_module.clone(),
+                            name: struct_name.clone(),
+                            args,
+                        });
                     }
-                    for (target_mi, h_idx) in dispatch {
-                        let _ = self.call(
-                            target_mi,
-                            h_idx as usize,
-                            &[struct_val.clone()],
-                        )?;
-                    }
+                    self.dispatch_handlers_parallel(
+                        &emit_module,
+                        &struct_name,
+                        &struct_val,
+                    )?;
                 }
                 Instr::ReadBatch { group_idx } => {
                     let group = &f.read_groups[group_idx as usize];
