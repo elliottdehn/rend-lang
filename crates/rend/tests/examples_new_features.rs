@@ -56,6 +56,16 @@ fn example_44_event_handlers_fires_each_handler_on_every_emit() {
 }
 
 #[test]
+fn example_46_parallel_portfolio_runs_reads_concurrently() {
+    // Three parallel pmap reads + parallel pmap writes. Expected
+    // USD-equivalent total:
+    //   1000 × 1.00 + 500 × 1.08 + 100000 × 0.01 = 1000 + 540 + 1000 = 2540.
+    let src = std::fs::read_to_string("examples/46_parallel_portfolio.rd").unwrap();
+    let out = rend::run(&src).unwrap();
+    assert_eq!(out, Value::U64(2540));
+}
+
+#[test]
 fn example_45_audit_plugin_cross_module_handler_records_every_transfer() {
     // The `audit` module's `on bank::Transferred fn record` handler
     // appends to a pmap. Three transfers in `main` → three entries.
