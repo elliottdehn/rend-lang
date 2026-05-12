@@ -60,14 +60,22 @@ unique_index sell_book on pending_sells.(price ASC,  id ASC);
 // max cost = qty × price), then a W on `pending_buys[id]`. The
 // caller pre-allocates `id` so the four parallel submits in
 // main don't fence on `next_id`.
+//
+// Leg-safe: if the buyer can't cover the bid we return without
+// touching any state. The order never enters the book and the
+// underflow trap never fires — so a single underfunded buyer
+// in a parallel batch can't take the other legs down with them.
 entry fn escrow_buy(owner: Address, id: u64, price: u64, qty: u64) {
-    cash[owner] = cash[owner] - price * qty;
+    let cost = price * qty;
+    if cash[owner] < cost { return; }
+    cash[owner] = cash[owner] - cost;
     pending_buys[id] = Order { id: id, price: price, qty: qty, owner: owner };
 }
 
 // Same shape for sells — R→W on `asset[owner]`, then write
-// the order.
+// the order. Same leg-safe guard against insufficient asset.
 entry fn escrow_sell(owner: Address, id: u64, price: u64, qty: u64) {
+    if asset[owner] < qty { return; }
     asset[owner] = asset[owner] - qty;
     pending_sells[id] = Order { id: id, price: price, qty: qty, owner: owner };
 }
@@ -195,10 +203,13 @@ fn main() -> u64 {
     let dave  = address("dave");
 
     // Seed funded balances. Buyers get cash, sellers get asset.
-    // (Sequential — these are the only writes to these cells in
-    // setup; no concurrency to exploit.)
+    // bob is deliberately under-seeded — his planned bid (5 × 99
+    // = 495) exceeds his 100-cash balance, so his leg of the
+    // parallel block will hit the leg-safe guard inside
+    // `escrow_buy` and bail out without touching state. The
+    // other three legs still go through.
     cash[alice]  = 1000u64;
-    cash[bob]    =  600u64;
+    cash[bob]    =  100u64;
     asset[carol] =   10u64;
     asset[dave]  =   10u64;
 
@@ -240,6 +251,11 @@ fn main() -> u64 {
     // writes share buy_book / sell_book roots; those merge via
     // shadow-Tx conflict re-run, but the disjoint cash / asset
     // / order writes commute cleanly.
+    //
+    // The block is leg-safe: bob's escrow_buy hits the
+    // insufficient-funds guard and returns without writing.
+    // His shadow Tx commits an empty delta; the other three
+    // legs proceed unaffected. No abort, no cascade.
     let id_a = next_id + 1u64;
     let id_b = next_id + 2u64;
     let id_c = next_id + 3u64;
@@ -254,19 +270,25 @@ fn main() -> u64 {
 
     let volume = commit_tick();
 
-    // Encoded:  volume * 1_000_000
-    //         + cash_of(carol) * 100
+    // Encoded:  volume          * 1_000_000_000
+    //         + cash_of(carol)  * 1_000_000
+    //         + cash_of(bob)    * 1_000
     //         + asset_of(alice)
     //
-    //         = 8 * 1_000_000          (cleared volume)
-    //         + 800 * 100              (seller received cash)
-    //         +   8                    (buyer received asset)
-    //         = 8_080_008
+    //         = 8   * 1_000_000_000     (cleared volume)
+    //         + 800 * 1_000_000         (seller received cash)
+    //         + 100 * 1_000             (bob's cash *untouched* —
+    //                                    leg-skipped: had his leg
+    //                                    run, cost 495 would have
+    //                                    underflowed his 100 balance)
+    //         + 8                       (buyer received asset)
+    //         = 8_800_100_008
     //
-    // The mix proves both the FBA math (volume) and the escrow
-    // round-trip (asset to buyer, cash to seller) in one number —
-    // drift in either path breaks the assertion.
-    return volume * 1000000u64
-         + cash_of(carol) * 100u64
+    // The mix proves the FBA math, the escrow round-trip, AND
+    // the leg-safe skip in one assertion: a regression on any of
+    // those paths shifts the number.
+    return volume * 1000000000u64
+         + cash_of(carol) * 1000000u64
+         + cash_of(bob)   * 1000u64
          + asset_of(alice);
 }

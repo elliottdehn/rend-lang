@@ -80,23 +80,27 @@ fn example_49_frequent_batch_auction_uncrosses_at_volume_max_price() {
     // a real disjoint R→W on its user's cash/asset cell and a write
     // to a fresh pmap key (id pre-allocated serially upstream).
     //
-    // Seeded book:
-    //   buys:  alice 10 @ 100, bob  5 @ 99
-    //   sells: carol  8 @ 98,  dave 7 @ 101
-    // P*=100 (tied with 99 at cross=8; DESC walk + strict `>` keeps
-    // the higher tie). Eligible: alice (10) vs carol (8). Pro-rata:
-    // alice fills 8, carol fills 8.
+    // The block is also leg-safe: bob is under-seeded with 100 cash
+    // for a 495-cash bid, so his shadow Tx hits the
+    // insufficient-funds guard and bails out cleanly without
+    // taking the other three legs with it.
     //
-    // Settlement: asset[alice] = 8, cash[carol] = 800.
-    //   volume*1_000_000 + cash[carol]*100 + asset[alice]
-    //   = 8*1_000_000 + 800*100 + 8 = 8_080_008.
+    // Seeded book (after the parallel block):
+    //   buys:  alice 10 @ 100         (bob's leg skipped)
+    //   sells: carol  8 @ 98, dave 7 @ 101
+    // P*=100. alice fills 8 → asset[alice] = 8.
+    //         carol fills 8 → cash[carol]  = 800.
+    //         cash[bob] stays at 100 (untouched).
+    //
+    //   volume*1e9 + cash[carol]*1e6 + cash[bob]*1e3 + asset[alice]
+    //   = 8e9 + 800e6 + 100_000 + 8 = 8_800_100_008.
     use rend::{Engine, Fuel};
     let src = std::fs::read_to_string("examples/49_batch_auction.rd").unwrap();
     let kv = rend::kv::InMemoryKv::new();
     let out = Engine::new()
         .execute(&src, Fuel::new(200_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::U64(8_080_008));
+    assert_eq!(out.result, Value::U64(8_800_100_008));
 }
 
 #[test]
