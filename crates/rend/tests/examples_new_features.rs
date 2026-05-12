@@ -72,6 +72,30 @@ fn example_48_multi_symbol_order_book_uses_three_field_composite() {
 }
 
 #[test]
+fn example_49_frequent_batch_auction_uncrosses_at_volume_max_price() {
+    // FBA: no time priority — orders sit in a pending tick, then
+    // `commit_tick` finds the clearing price P* that maximizes
+    // crossed volume and fills every eligible order pro-rata at P*.
+    //
+    // Seeded book:
+    //   buys:  alice 10 @ 100, bob  5 @ 99
+    //   sells: carol  8 @ 98,  dave 7 @ 101
+    // P*=100 (tied with 99 at cross=8; DESC walk + strict `>` keeps
+    // the higher tie). Eligible: alice (10) vs carol (8). Pro-rata:
+    // alice fills 8, carol fills 8.
+    //
+    //   volume*1_000_000 + clearing_price*100 + fill_count
+    //   = 8*1_000_000 + 100*100 + 2 = 8_010_002.
+    use rend::{Engine, Fuel};
+    let src = std::fs::read_to_string("examples/49_batch_auction.rd").unwrap();
+    let kv = rend::kv::InMemoryKv::new();
+    let out = Engine::new()
+        .execute(&src, Fuel::new(200_000), &kv)
+        .unwrap();
+    assert_eq!(out.result, Value::U64(8_010_002));
+}
+
+#[test]
 fn example_47_order_book_with_composite_pbtree_bytes_keys() {
     // Bytes-keyed pbtree gives unbounded composite-index arity.
     // The order-book example hand-packs (price, time) into the
