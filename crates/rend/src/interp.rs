@@ -40,8 +40,14 @@ impl<'a> Interp<'a> {
         let mut state_types = HashMap::new();
         let mut state_roots = HashMap::new();
         for s in &module.states {
-            state_defaults.insert(s.name.clone(), default_for_type(&s.ty));
-            state_types.insert(s.name.clone(), s.ty.clone());
+            // Strip `` `T` `` tags from the storage type — the
+            // explicit-literal property is compile-time only;
+            // on-disk encoding must match between read and write
+            // regardless of any backtick wrapping on the slot's
+            // declared type.
+            let stripped = strip_explicit_literal_ty(&s.ty);
+            state_defaults.insert(s.name.clone(), default_for_type(&stripped));
+            state_types.insert(s.name.clone(), stripped);
             state_roots.insert(s.name.clone(), crate::hashing::state_root("main", &s.name));
         }
         let mut struct_decls = HashMap::new();
@@ -2221,6 +2227,46 @@ fn value_to_u64(v: &Value) -> Option<u64> {
 
 fn value_to_usize(v: &Value) -> Option<usize> {
     value_to_u64(v).and_then(|n| n.try_into().ok())
+}
+
+/// Drop `` `T` `` wrappers from a type tree, recursively. Mirrors
+/// the compile-time helper of the same name in compile.rs — used
+/// to normalize state types before passing them to the storage
+/// layer, so encoding stays symmetric across reads and writes.
+fn strip_explicit_literal_ty(ty: &Type) -> Type {
+    match ty {
+        Type::ExplicitLiteral(inner) => strip_explicit_literal_ty(inner),
+        Type::Array(elem) => Type::Array(Box::new(strip_explicit_literal_ty(elem))),
+        Type::Set(elem) => Type::Set(Box::new(strip_explicit_literal_ty(elem))),
+        Type::Dict { key, value } => Type::Dict {
+            key: Box::new(strip_explicit_literal_ty(key)),
+            value: Box::new(strip_explicit_literal_ty(value)),
+        },
+        Type::Map { key, value } => Type::Map {
+            key: Box::new(strip_explicit_literal_ty(key)),
+            value: Box::new(strip_explicit_literal_ty(value)),
+        },
+        Type::PMap { key, value } => Type::PMap {
+            key: Box::new(strip_explicit_literal_ty(key)),
+            value: Box::new(strip_explicit_literal_ty(value)),
+        },
+        Type::PBTree { key, value } => Type::PBTree {
+            key: Box::new(strip_explicit_literal_ty(key)),
+            value: Box::new(strip_explicit_literal_ty(value)),
+        },
+        Type::PVec { elem } => Type::PVec { elem: Box::new(strip_explicit_literal_ty(elem)) },
+        Type::Struct { name, fields, field_groups } => Type::Struct {
+            name: name.clone(),
+            fields: fields.iter()
+                .map(|(n, t)| (n.clone(), strip_explicit_literal_ty(t)))
+                .collect(),
+            field_groups: field_groups.clone(),
+        },
+        Type::Tuple(elems) => Type::Tuple(
+            elems.iter().map(strip_explicit_literal_ty).collect()
+        ),
+        other => other.clone(),
+    }
 }
 
 fn default_for_type(ty: &Type) -> Value {

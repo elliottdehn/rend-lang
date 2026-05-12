@@ -233,6 +233,12 @@ pub fn serialize(value: &Value) -> Vec<u8> {
 }
 
 pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
+    // Strip the compile-time explicit-literal tag — the on-disk
+    // encoding is independent of any `` `T` `` wrapping on the
+    // expected type.
+    if let Type::ExplicitLiteral(inner) = expected {
+        return deserialize(bytes, inner);
+    }
     let (tag, rest) = bytes.split_first()?;
     match (*tag, expected) {
         (TAG_INT, Type::Int) => {

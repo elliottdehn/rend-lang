@@ -72,6 +72,26 @@ fn example_48_multi_symbol_order_book_uses_three_field_composite() {
 }
 
 #[test]
+fn example_53_sticky_explicit_literals_propagate_through_api_boundary() {
+    // Sticky `` `T` `` carries the "constructed inertly" property
+    // through bindings, struct field access, and array indexing.
+    // The API author declares `name: ` `` `string` `` `` at the
+    // struct field site; every call site that builds a Profile
+    // must satisfy the constraint, no matter how many helper
+    // hops the value flowed through. Computing operators erase
+    // the tag.
+    //
+    // Trace: three Profile values registered (one whole-struct
+    // backtick, one per-field with computed version, one via
+    // typed-let propagation). Encoded result is
+    //   next_id*1000 + p[1].v*100 + p[2].v*10 + p[3].v
+    //   = 3000 + 100 + 60 + 30 = 3_190.
+    let src = std::fs::read_to_string("examples/53_sticky_explicit_literals.rd").unwrap();
+    let out = rend::run(&src).unwrap();
+    assert_eq!(out, Value::U64(3_190));
+}
+
+#[test]
 fn example_52_explicit_literals_inert_by_construction() {
     // `` `<expr>` `` is a parse-time inert-literal check: the
     // parser walks the inner expression and rejects anything

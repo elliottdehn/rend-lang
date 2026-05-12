@@ -66,7 +66,7 @@ pub fn compile_named_with_extras(
     let mut state_index = HashMap::new();
     for (i, s) in module.states.iter().enumerate() {
         state_roots.push(crate::hashing::state_root(module_name, &s.name));
-        state_types.push(s.ty.clone());
+        state_types.push(strip_explicit_literal(&s.ty));
         state_defaults.push(default_for(&s.ty));
         state_names.push(s.name.clone());
         state_index.insert(s.name.clone(), i);
@@ -77,7 +77,16 @@ pub fn compile_named_with_extras(
         struct_shapes.push(StructShape {
             name: s.name.clone(),
             field_names: s.fields.iter().map(|f| f.name.clone()).collect(),
-            field_types: s.fields.iter().map(|f| f.ty.clone()).collect(),
+            // Strip `` `T` `` wrappers from field types — the
+            // explicit-literal tag is a compile-time-only property
+            // that lives in typeck and the AST. At the storage /
+            // runtime layer the field type is the inner type, and
+            // its on-disk encoding must match between writes and
+            // reads regardless of any backtick context that
+            // produced the value.
+            field_types: s.fields.iter()
+                .map(|f| strip_explicit_literal(&f.ty))
+                .collect(),
             field_groups: s.fields.iter().map(|f| f.group.clone()).collect(),
             is_pub: s.is_pub,
         });
@@ -92,7 +101,9 @@ pub fn compile_named_with_extras(
         struct_shapes.push(StructShape {
             name: c.name.clone(),
             field_names: c.fields.iter().map(|f| f.name.clone()).collect(),
-            field_types: c.fields.iter().map(|f| f.ty.clone()).collect(),
+            field_types: c.fields.iter()
+                .map(|f| strip_explicit_literal(&f.ty))
+                .collect(),
             field_groups: c.fields.iter().map(|f| f.group.clone()).collect(),
             is_pub: false,
         });
@@ -218,6 +229,47 @@ pub fn compile_named_with_extras(
 
 fn default_for(ty: &Type) -> Value {
     Value::default_for(ty)
+}
+
+/// Drop `` `T` `` wrappers from a type tree, recursively. The
+/// explicit-literal tag is a compile-time-only property living
+/// in typeck and the AST; at the bytecode / storage layer every
+/// cell is encoded by its plain inner type, so we strip the tag
+/// before recording field types in the struct shape table.
+fn strip_explicit_literal(ty: &Type) -> Type {
+    match ty {
+        Type::ExplicitLiteral(inner) => strip_explicit_literal(inner),
+        Type::Array(elem) => Type::Array(Box::new(strip_explicit_literal(elem))),
+        Type::Set(elem) => Type::Set(Box::new(strip_explicit_literal(elem))),
+        Type::Dict { key, value } => Type::Dict {
+            key: Box::new(strip_explicit_literal(key)),
+            value: Box::new(strip_explicit_literal(value)),
+        },
+        Type::Map { key, value } => Type::Map {
+            key: Box::new(strip_explicit_literal(key)),
+            value: Box::new(strip_explicit_literal(value)),
+        },
+        Type::PMap { key, value } => Type::PMap {
+            key: Box::new(strip_explicit_literal(key)),
+            value: Box::new(strip_explicit_literal(value)),
+        },
+        Type::PBTree { key, value } => Type::PBTree {
+            key: Box::new(strip_explicit_literal(key)),
+            value: Box::new(strip_explicit_literal(value)),
+        },
+        Type::PVec { elem } => Type::PVec { elem: Box::new(strip_explicit_literal(elem)) },
+        Type::Struct { name, fields, field_groups } => Type::Struct {
+            name: name.clone(),
+            fields: fields.iter()
+                .map(|(n, t)| (n.clone(), strip_explicit_literal(t)))
+                .collect(),
+            field_groups: field_groups.clone(),
+        },
+        Type::Tuple(elems) => Type::Tuple(
+            elems.iter().map(strip_explicit_literal).collect()
+        ),
+        other => other.clone(),
+    }
 }
 
 /// Build an `Expr` that evaluates to `Type::default_for(t)` at

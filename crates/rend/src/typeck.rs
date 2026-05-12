@@ -268,6 +268,9 @@ fn resolve_one_with_enums(
                 .collect();
             Ok(Type::Tuple(resolved?))
         }
+        Type::ExplicitLiteral(inner) => Ok(Type::ExplicitLiteral(Box::new(
+            resolve_one_with_enums(inner, structs, enums, caps, ifaces, span)?,
+        ))),
         _ => resolve_one(ty, structs, span),
     }
 }
@@ -786,6 +789,12 @@ struct TypeChecker {
     /// True while checking the body of a function named `main`. Such
     /// functions are subject to the host-boundary rule above.
     in_main: std::cell::Cell<bool>,
+    /// Depth counter: nonzero while typechecking the inner of a
+    /// `` `<expr>` `` wrapper. When set, struct-literal field checks
+    /// and array-element checks tolerate `T → ` `` `T` `` widening
+    /// (the surrounding construction-site check already validated
+    /// every sub-expression as inert, so the tag is justified).
+    explicit_literal_depth: std::cell::Cell<u32>,
 }
 
 #[derive(Default)]
@@ -1150,6 +1159,7 @@ fn check_inner(
         current_module,
         externals,
         pipe_stack: std::cell::RefCell::new(Vec::new()),
+        explicit_literal_depth: std::cell::Cell::new(0),
         in_main: std::cell::Cell::new(false),
     };
     // Now validate each const's RHS produces the declared type.
@@ -2498,7 +2508,15 @@ impl TypeChecker {
                             )
                         })?;
                     let actual = self.check_expr(&provided.1, env)?;
-                    if &actual != declared_ty {
+                    // Inside a `` `<expr>` `` context, plain T flows
+                    // into `` `T` `` field slots: the construction-
+                    // site check has already validated this
+                    // sub-expression as inert, so the tag is
+                    // justified.
+                    let ok_in_explicit_ctx = self.explicit_literal_depth.get() > 0
+                        && matches!(declared_ty, Type::ExplicitLiteral(inner)
+                            if &**inner == &actual);
+                    if &actual != declared_ty && !ok_in_explicit_ctx {
                         return Err(Error::new(
                             ErrorKind::Type,
                             format!(
@@ -2702,14 +2720,18 @@ impl TypeChecker {
             }
             ExprKind::ExplicitLiteral(inner) => {
                 // Type-check the inner expression normally, then
-                // tag the result as sticky `` `T` ``. From here on,
-                // the value will propagate through `Ident` lookups,
-                // field accesses, and array indexes carrying the
-                // tag; computing operators (binary / unary other
-                // than `-<numeric>`) erase it; assignment to a `T`
-                // slot widens; assignment to a `` `T` `` slot
-                // preserves.
-                let inner_ty = self.check_expr(inner, env)?;
+                // tag the result as sticky `` `T` ``. The depth
+                // counter is bumped while we check the inner so
+                // struct-literal field checks and array-element
+                // checks can tolerate plain-T values flowing into
+                // `` `T` `` slots — the construction-site check
+                // (in the parser) already verified every sub-
+                // expression is inert, so the widening is sound.
+                let prev = self.explicit_literal_depth.get();
+                self.explicit_literal_depth.set(prev + 1);
+                let inner_ty_result = self.check_expr(inner, env);
+                self.explicit_literal_depth.set(prev);
+                let inner_ty = inner_ty_result?;
                 // Avoid double-wrapping: `` `` `5` ``  `` ` ` (nested
                 // backticks) is the same as a single one.
                 let unwrapped = match inner_ty {

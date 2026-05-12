@@ -477,6 +477,10 @@ impl<'a> Tx<'a> {
     /// the value is consumed. Struct reads stay eager but go through
     /// `read_typed_many` so all leaves batch into one round-trip.
     pub fn read_typed(&mut self, key: u128, ty: &Type) -> Value {
+        // Strip the compile-time explicit-literal tag.
+        if let Type::ExplicitLiteral(inner) = ty {
+            return self.read_typed(key, inner);
+        }
         if matches!(ty, Type::Struct { .. }) {
             return self
                 .read_typed_many(&[(key, ty.clone())])
@@ -562,6 +566,11 @@ impl<'a> Tx<'a> {
     /// Write a value typed by `ty`, splitting structs into per-field leaf
     /// writes. Mismatched values fall back to a single-cell write.
     pub fn write_typed(&mut self, key: u128, ty: &Type, value: Value) {
+        // Strip the explicit-literal compile-time tag — storage
+        // doesn't carry it.
+        if let Type::ExplicitLiteral(inner) = ty {
+            return self.write_typed(key, inner, value);
+        }
         let value = self.force(value);
         match (ty, value) {
             (
@@ -888,6 +897,13 @@ fn collect_leaves(
     keys: &mut Vec<u128>,
     types: &mut Vec<Type>,
 ) -> TreeSpec {
+    // `` `T` `` is a compile-time-only tag; at the storage layer
+    // every cell is encoded by its inner type. Unwrap before
+    // splitting / leaf-collecting so reads and writes use the
+    // same on-disk shape.
+    if let Type::ExplicitLiteral(inner) = ty {
+        return collect_leaves(key, inner, keys, types);
+    }
     match ty {
         Type::Struct { name, fields, field_groups } => {
             let mut field_specs = Vec::with_capacity(fields.len());
