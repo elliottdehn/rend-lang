@@ -9,6 +9,7 @@ description = "An embeddable, sandboxed, affine-typed programming language."
 rayon = "1.10"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
+indexmap = { workspace = true }
 
 [lib]
 name = "rend"

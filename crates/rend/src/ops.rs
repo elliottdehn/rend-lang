@@ -397,53 +397,66 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
         // primitives or asserts shape (errors on mismatch — buyer
         // beware). `json_stringify` is the canonical text dump.
         "parse_json" => match args {
-            [Value::Str(s)] => crate::json::parse(s)
-                .map(Value::Json)
-                .map_err(|e| bad(e.to_string())),
+            // `parse` now returns a native `Value`: primitives
+            // materialize as the corresponding rend variant, `null`
+            // and composites as `Value::Json(...)`. No wrapper layer.
+            [Value::Str(s)] => crate::json::parse(s).map_err(|e| bad(e.to_string())),
             _ => Err(bad("parse_json(string)".into())),
         },
         "json_stringify" => match args {
-            [Value::Json(j)] => Ok(Value::Str(j.to_string_canonical())),
-            _ => Err(bad("json_stringify(json)".into())),
+            [v] => {
+                let mut out = String::new();
+                crate::json::write_canonical_value(v, &mut out);
+                Ok(Value::Str(out))
+            }
+            _ => Err(bad("json_stringify(value)".into())),
         },
         "json_get_field" => match args {
-            [Value::Json(j), Value::Str(k)] => {
-                Ok(Value::Json(j.get_field(k).cloned().unwrap_or(crate::json::Json::Null)))
-            }
+            [Value::Json(j), Value::Str(k)] => Ok(j
+                .get_field(k)
+                .cloned()
+                .unwrap_or(Value::Json(crate::json::Json::Null))),
+            // Path-access on a primitive json-typed value always
+            // misses (primitives have no fields).
+            [_, Value::Str(_)] => Ok(Value::Json(crate::json::Json::Null)),
             _ => Err(bad("json_get_field(json, string)".into())),
         },
         "json_get_index" => match args {
             [Value::Json(j), Value::Int(i)] => match i.to_usize() {
-                Some(idx) => Ok(Value::Json(
-                    j.get_index(idx).cloned().unwrap_or(crate::json::Json::Null))),
+                Some(idx) => Ok(j
+                    .get_index(idx)
+                    .cloned()
+                    .unwrap_or(Value::Json(crate::json::Json::Null))),
                 None => Err(bad(format!("json_get_index: out of range: {i}"))),
             },
-            [Value::Json(j), Value::U64(i)] => {
-                Ok(Value::Json(j.get_index(*i as usize).cloned().unwrap_or(crate::json::Json::Null)))
-            }
+            [Value::Json(j), Value::U64(i)] => Ok(j
+                .get_index(*i as usize)
+                .cloned()
+                .unwrap_or(Value::Json(crate::json::Json::Null))),
+            [_, _] => Ok(Value::Json(crate::json::Json::Null)),
             _ => Err(bad("json_get_index(json, int|u64)".into())),
         },
+        // `json_to_*` family: extract a primitive. With native-leaf
+        // semantics the Value IS the primitive — no unwrap of a
+        // wrapper variant required. Mismatched shapes still error.
         "json_to_string" => match args {
-            [Value::Json(crate::json::Json::Str(s))] => Ok(Value::Str(s.clone())),
-            [Value::Json(other)] => Err(bad(format!(
+            [Value::Str(s)] => Ok(Value::Str(s.clone())),
+            [other] => Err(bad(format!(
                 "json_to_string: value is not a string: {other}",
             ))),
             _ => Err(bad("json_to_string(json)".into())),
         },
         "json_to_i64" => match args {
-            // `json_to_i64` now returns a regular `int` (BigInt) — the
-            // i64 name is historical, kept for source-compat. The
-            // returned Value::Int carries the full BigInt; there is no
-            // truncation. Sized-i64 conversion happens at the typed
-            // builtin boundary if needed.
-            [Value::Json(crate::json::Json::Int(n))] => Ok(Value::int(n.clone())),
-            [Value::Json(other)] => Err(bad(format!(
+            // Now returns `int` (BigInt); historical name kept for
+            // source-compat. Accepts `int` or `uint`.
+            [Value::Int(n)] | [Value::UInt(n)] => Ok(Value::int(n.clone())),
+            [other] => Err(bad(format!(
                 "json_to_i64: value is not an integer: {other}",
             ))),
             _ => Err(bad("json_to_i64(json)".into())),
         },
         "json_to_u64" => match args {
-            [Value::Json(crate::json::Json::Int(n))] => {
+            [Value::Int(n)] | [Value::UInt(n)] => {
                 use num_traits::ToPrimitive;
                 match n.to_u64() {
                     Some(v) => Ok(Value::U64(v)),
@@ -452,21 +465,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
                     ))),
                 }
             }
-            [Value::Json(other)] => Err(bad(format!(
+            [other] => Err(bad(format!(
                 "json_to_u64: value is not a non-negative integer: {other}",
             ))),
             _ => Err(bad("json_to_u64(json)".into())),
         },
         "json_to_bool" => match args {
-            [Value::Json(crate::json::Json::Bool(b))] => Ok(Value::Bool(*b)),
-            [Value::Json(other)] => Err(bad(format!(
+            [Value::Bool(b)] => Ok(Value::Bool(*b)),
+            [other] => Err(bad(format!(
                 "json_to_bool: value is not a bool: {other}",
             ))),
             _ => Err(bad("json_to_bool(json)".into())),
         },
         "json_is_null" => match args {
             [Value::Json(crate::json::Json::Null)] => Ok(Value::Bool(true)),
-            [Value::Json(_)] => Ok(Value::Bool(false)),
+            [_] => Ok(Value::Bool(false)),
             _ => Err(bad("json_is_null(json)".into())),
         },
         "min" => match args {

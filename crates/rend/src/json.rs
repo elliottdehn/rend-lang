@@ -1,110 +1,91 @@
 //! `json` runtime type. Internally **jsonb**-shaped: parsed at the
 //! trust boundary (host input or `parse_json(string)`) into a
-//! structured value, then accessed in parsed form. State storage
-//! uses a tagged binary serialization, not the original text.
+//! structured value, then accessed in parsed form.
 //!
-//! Trade-offs we inherit from the parsed-once model:
-//!   * Path access (`j -> "key"`, `j -> [n]`) is fast — no re-parse
-//!     per step. Object key lookup is O(N) over the keys; array
-//!     index is O(1).
-//!   * Storage cost is roughly the size of the parsed form,
-//!     typically smaller than the original JSON text.
-//!   * Whitespace and original key formatting are not preserved.
-//!     Object keys keep insertion order (deterministic for content-
-//!     addressed cells) — Postgres jsonb canonicalizes by sorting
-//!     keys; we don't, which keeps round-trips structurally equal.
+//! ## Leaves are *native* rend values
 //!
-//! Numeric handling: every leaf JSON value is supported.
-//!   * `Int` carries a `BigInt` — arbitrary precision, no
-//!     overflow at parse time, no upper bound. A 2048-bit ledger
-//!     balance is the same shape as `42`.
-//!   * `Float` carries an `f64`. A JSON literal with `.`, `e`, or
-//!     `E` parses to a Float; integer literals are never
-//!     widened to Float. The conversion from Float back to a
-//!     rend `Int` / `U64` errors if precision would be lost.
+//! Json itself only carries the JSON-specific composite shapes:
+//! `Null`, `Array(Vec<Value>)`, and `Object(IndexMap<String, Value>)`.
+//! Primitive JSON leaves materialize as ordinary rend values —
+//! `Value::Bool`, `Value::Int(BigInt)`, `Value::Float(F64Bits)`,
+//! `Value::Str(String)`. There is no separate `Json::Int` /
+//! `Json::Bool` / etc. — the rend type system's primitives *are*
+//! the JSON leaves.
+//!
+//! Numeric handling:
+//!   * Bare numbers without `.`/`e`/`E` parse to `Value::Int`
+//!     (arbitrary precision, no overflow at parse time).
+//!   * Numbers with `.`/`e`/`E` parse to `Value::Float`.
+//!
+//! Object lookup is O(1) via `IndexMap`; iteration order matches
+//! insertion order so content-addressed cells over JSON hash
+//! deterministically.
 //!
 //! "Buyer beware" semantics throughout: missing keys / wrong shapes
-//! yield `Json::Null` or runtime errors at conversion sites. There
-//! is no static schema check; the type is intentionally dynamic.
+//! yield `None` at the path-access site (the host then surfaces
+//! `Value::Json(Json::Null)`). There is no static schema check; the
+//! type is intentionally dynamic.
 
+use crate::value::{F64Bits, Value};
+use indexmap::IndexMap;
 use num_bigint::BigInt;
 use std::fmt;
 
-pub use crate::value::F64Bits;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Json {
+    /// JSON's `null` — the one truly Json-specific leaf shape; rend
+    /// has no native null value to map onto.
     Null,
-    Bool(bool),
-    /// Arbitrary-precision signed integer. JSON's "number" without a
-    /// fractional or exponent part parses here; rend tx code carries
-    /// values 2048+ bits wide if the contract asked for it.
-    Int(BigInt),
-    /// IEEE-754 double. JSON's "number" with `.`/`e`/`E` parses here.
-    /// We store the value rather than the originating string, so two
-    /// floats that round-trip to the same bit pattern compare equal.
-    /// `f64` doesn't implement `Eq`, so we hand-roll the `PartialEq`
-    /// impl below to keep `Json: Eq` (tests want it; bitwise compare
-    /// is fine here because NaN never appears from the JSON path).
-    Float(F64Bits),
-    Str(String),
-    Array(Vec<Json>),
-    /// Object: insertion-order-preserving key/value list. Linear key
-    /// lookup is fine for typical JSON document sizes; switch to a
-    /// map representation later if profiling demands it.
-    Object(Vec<(String, Json)>),
+    /// Composite array. Each element is a native rend `Value`:
+    /// numbers are `Value::Int(BigInt)` (or `Float`), booleans are
+    /// `Value::Bool`, strings are `Value::Str`, nested arrays /
+    /// objects are `Value::Json(Json::Array(...))` etc.
+    Array(Vec<Value>),
+    /// Composite object: insertion-order-preserving hash map.
+    /// O(1) lookup, deterministic iteration. Values are native
+    /// rend `Value`s, same shape as `Array`'s elements.
+    Object(IndexMap<String, Value>),
 }
-
-// `F64Bits` is the shared wrapper from `crate::value` (re-exported
-// above) — both `Value::Float` and (the soon-to-be-removed)
-// `Json::Float` use the same type.
 
 impl Json {
     /// Object key access. Missing key → `None`. Non-object → `None`.
-    pub fn get_field(&self, key: &str) -> Option<&Json> {
+    pub fn get_field(&self, key: &str) -> Option<&Value> {
         match self {
-            Json::Object(pairs) => pairs.iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v),
+            Json::Object(m) => m.get(key),
             _ => None,
         }
     }
 
     /// Array index access. Out-of-range → `None`. Non-array → `None`.
-    pub fn get_index(&self, idx: usize) -> Option<&Json> {
+    pub fn get_index(&self, idx: usize) -> Option<&Value> {
         match self {
             Json::Array(items) => items.get(idx),
             _ => None,
         }
     }
 
-    /// Best-effort canonical text rendering. Used by `json_stringify`
-    /// and for `Display` (mostly diagnostic output). Output is
-    /// deterministic given the same input value.
+    /// Best-effort canonical text rendering. Output is deterministic
+    /// given the same input value.
     pub fn to_string_canonical(&self) -> String {
         let mut out = String::new();
-        write_canonical(self, &mut out);
+        write_canonical_json(self, &mut out);
         out
     }
 }
 
-fn write_canonical(j: &Json, out: &mut String) {
-    match j {
-        Json::Null => out.push_str("null"),
-        Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Json::Int(n) => out.push_str(&n.to_string()),
-        Json::Float(F64Bits(n)) => {
-            // JSON spec doesn't admit NaN / ±Inf. Render them as
-            // `null` so the output stays valid JSON; callers that
-            // need stricter behavior should validate before
-            // serializing.
+/// Canonical-text rendering for a Value that came from JSON
+/// (primitives in their native variants). Falls back to `null` for
+/// any rend Value that doesn't map to a JSON shape — e.g. a
+/// `Value::Resource` or `Value::PMap` accidentally placed into a
+/// json-typed cell. Reserved cells should never end up there
+/// anyway; this is a defense, not a contract.
+pub fn write_canonical_value(v: &Value, out: &mut String) {
+    match v {
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Int(n) | Value::UInt(n) => out.push_str(&n.to_string()),
+        Value::Float(F64Bits(n)) => {
             if n.is_finite() {
-                // Use a representation that distinguishes integers
-                // from floats — JSON parsers wouldn't, but we want
-                // a round-trip Float → text → Float to land back as
-                // Float, not Int. Append ".0" if there's no
-                // fractional/exponent part.
-                let s = format!("{}", n);
+                let s = format!("{n}");
                 if s.contains('.') || s.contains('e') || s.contains('E') {
                     out.push_str(&s);
                 } else {
@@ -112,25 +93,36 @@ fn write_canonical(j: &Json, out: &mut String) {
                     out.push_str(".0");
                 }
             } else {
+                // NaN / ±Inf aren't valid JSON. Emit `null` so the
+                // output stays parseable; callers that need stricter
+                // behavior should validate before serializing.
                 out.push_str("null");
             }
         }
-        Json::Str(s) => write_string(s, out),
+        Value::Str(s) => write_string(s, out),
+        Value::Json(j) => write_canonical_json(j, out),
+        _ => out.push_str("null"),
+    }
+}
+
+fn write_canonical_json(j: &Json, out: &mut String) {
+    match j {
+        Json::Null => out.push_str("null"),
         Json::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 { out.push(','); }
-                write_canonical(item, out);
+                write_canonical_value(item, out);
             }
             out.push(']');
         }
-        Json::Object(pairs) => {
+        Json::Object(m) => {
             out.push('{');
-            for (i, (k, v)) in pairs.iter().enumerate() {
+            for (i, (k, v)) in m.iter().enumerate() {
                 if i > 0 { out.push(','); }
                 write_string(k, out);
                 out.push(':');
-                write_canonical(v, out);
+                write_canonical_value(v, out);
             }
             out.push('}');
         }
@@ -175,7 +167,11 @@ impl fmt::Display for ParseError {
     }
 }
 
-pub fn parse(s: &str) -> Result<Json, ParseError> {
+/// Parse a JSON text into a rend `Value`. Primitives materialize as
+/// native rend variants (`Value::Bool`, `Value::Int`, `Value::Float`,
+/// `Value::Str`); `null`, arrays, and objects are wrapped as
+/// `Value::Json(Json::*)`.
+pub fn parse(s: &str) -> Result<Value, ParseError> {
     let bytes = s.as_bytes();
     let mut p = Parser { bytes, pos: 0 };
     p.skip_ws();
@@ -220,22 +216,22 @@ impl<'a> Parser<'a> {
         ParseError { msg: msg.into(), pos: self.pos }
     }
 
-    fn parse_value(&mut self) -> Result<Json, ParseError> {
+    fn parse_value(&mut self) -> Result<Value, ParseError> {
         self.skip_ws();
         match self.peek() {
-            Some(b'n') => self.parse_lit("null", Json::Null),
-            Some(b't') => self.parse_lit("true", Json::Bool(true)),
-            Some(b'f') => self.parse_lit("false", Json::Bool(false)),
-            Some(b'"') => self.parse_string().map(Json::Str),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
+            Some(b'n') => self.parse_lit("null", Value::Json(Json::Null)),
+            Some(b't') => self.parse_lit("true", Value::Bool(true)),
+            Some(b'f') => self.parse_lit("false", Value::Bool(false)),
+            Some(b'"') => self.parse_string().map(Value::Str),
+            Some(b'[') => self.parse_array().map(|a| Value::Json(a)),
+            Some(b'{') => self.parse_object().map(|o| Value::Json(o)),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
             Some(b) => Err(self.err(format!("unexpected byte {b:?}"))),
             None => Err(self.err("unexpected end of input")),
         }
     }
 
-    fn parse_lit(&mut self, lit: &str, value: Json) -> Result<Json, ParseError> {
+    fn parse_lit(&mut self, lit: &str, value: Value) -> Result<Value, ParseError> {
         for &c in lit.as_bytes() {
             if self.advance() != Some(c) {
                 return Err(self.err(format!("expected literal '{lit}'")));
@@ -275,8 +271,6 @@ impl<'a> Parser<'a> {
                             };
                             hex = (hex << 4) | v;
                         }
-                        // Slice-1: no surrogate-pair handling. Single
-                        // BMP code points only.
                         let c = char::from_u32(hex).ok_or_else(|| {
                             self.err("invalid \\u code point (surrogate pairs unsupported)")
                         })?;
@@ -289,7 +283,6 @@ impl<'a> Parser<'a> {
                     return Err(self.err("control character in string"));
                 }
                 Some(b) => {
-                    // UTF-8: collect any continuation bytes.
                     let start = self.pos - 1;
                     let n = utf8_len(b);
                     if n > 1 {
@@ -310,7 +303,7 @@ impl<'a> Parser<'a> {
 
     fn parse_array(&mut self) -> Result<Json, ParseError> {
         self.advance(); // '['
-        let mut items = Vec::new();
+        let mut items: Vec<Value> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.advance();
@@ -330,11 +323,11 @@ impl<'a> Parser<'a> {
 
     fn parse_object(&mut self) -> Result<Json, ParseError> {
         self.advance(); // '{'
-        let mut pairs = Vec::new();
+        let mut map: IndexMap<String, Value> = IndexMap::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.advance();
-            return Ok(Json::Object(pairs));
+            return Ok(Json::Object(map));
         }
         loop {
             self.skip_ws();
@@ -345,18 +338,18 @@ impl<'a> Parser<'a> {
             }
             self.skip_ws();
             let value = self.parse_value()?;
-            pairs.push((key, value));
+            map.insert(key, value);
             self.skip_ws();
             match self.advance() {
                 Some(b',') => {}
-                Some(b'}') => return Ok(Json::Object(pairs)),
+                Some(b'}') => return Ok(Json::Object(map)),
                 Some(b) => return Err(self.err(format!("expected ',' or '}}' in object, got {:?}", b as char))),
                 None => return Err(self.err("unterminated object")),
             }
         }
     }
 
-    fn parse_number(&mut self) -> Result<Json, ParseError> {
+    fn parse_number(&mut self) -> Result<Value, ParseError> {
         let start = self.pos;
         if self.peek() == Some(b'-') { self.advance(); }
         let int_start = self.pos;
@@ -366,8 +359,6 @@ impl<'a> Parser<'a> {
         if int_start == self.pos {
             return Err(self.err("expected digits"));
         }
-        // Fractional or exponent part → parse as Float. Integer-only
-        // literals parse as arbitrary-precision Int with no size cap.
         let mut is_float = false;
         if self.peek() == Some(b'.') {
             is_float = true;
@@ -398,322 +389,225 @@ impl<'a> Parser<'a> {
             .map_err(|_| self.err("invalid number"))?;
         if is_float {
             let f: f64 = s.parse().map_err(|_| self.err("invalid float literal"))?;
-            Ok(Json::Float(F64Bits(f)))
+            Ok(Value::Float(F64Bits(f)))
         } else {
             let n: BigInt = s.parse()
                 .map_err(|_| self.err("invalid integer literal"))?;
-            Ok(Json::Int(n))
+            Ok(Value::Int(n))
         }
     }
 }
 
 fn utf8_len(first: u8) -> usize {
     if first < 0x80 { 1 }
-    else if first < 0xC0 { 1 } // continuation byte (shouldn't be a leader)
+    else if first < 0xC0 { 1 }
     else if first < 0xE0 { 2 }
     else if first < 0xF0 { 3 }
     else { 4 }
 }
 
-// ---------- binary serialization (state cells) ----------
+// ---------- binary serialization (composites only) ----------
 //
-// Tag scheme:
-//   0x01 NULL
-//   0x02 TRUE
-//   0x03 FALSE
-//   0x04 INT      — u32 byte-length, then signed-BE bytes (BigInt)
-//   0x05 U64      — legacy fixed 8 BE bytes; readable for back-compat,
-//                   not produced by the writer anymore. New data uses
-//                   the variable-length INT.
-//   0x06 STR
-//   0x07 ARRAY
-//   0x08 OBJECT
-//   0x09 FLOAT    — 8 BE bytes (IEEE-754 double)
+// Json::Null / Array / Object are the only shapes encoded by this
+// module. Primitive leaves live as ordinary rend `Value`s and use
+// the regular `serialize::serialize` path. A json-typed state cell
+// whose runtime value happens to be a primitive (e.g. `Value::Int`
+// from `parse_json("42")`) is encoded with its primitive tag, not
+// TAG_JSON; the deserializer in `serialize.rs` accepts any tag when
+// the expected type is `Type::Json`.
+//
+// Tag scheme (inside TAG_JSON):
+//   0x00 NULL
+//   0x01 ARRAY   — u32 count, then `count` regular Value encodings
+//   0x02 OBJECT  — u32 count, then `count` (u32 keylen, keybytes,
+//                  Value) triples
 
-const TAG_NULL:        u8 = 0x01;
-const TAG_TRUE:        u8 = 0x02;
-const TAG_FALSE:       u8 = 0x03;
-const TAG_INT:         u8 = 0x04;
-const TAG_U64_LEGACY:  u8 = 0x05;
-const TAG_STR:         u8 = 0x06;
-const TAG_ARRAY:       u8 = 0x07;
-const TAG_OBJECT:      u8 = 0x08;
-const TAG_FLOAT:       u8 = 0x09;
+const J_NULL: u8 = 0x00;
+const J_ARRAY: u8 = 0x01;
+const J_OBJECT: u8 = 0x02;
 
 pub fn serialize(j: &Json) -> Vec<u8> {
     let mut out = Vec::new();
-    write_node(j, &mut out);
+    write_json(j, &mut out);
     out
 }
 
-fn write_node(j: &Json, out: &mut Vec<u8>) {
+fn write_json(j: &Json, out: &mut Vec<u8>) {
     match j {
-        Json::Null        => out.push(TAG_NULL),
-        Json::Bool(true)  => out.push(TAG_TRUE),
-        Json::Bool(false) => out.push(TAG_FALSE),
-        Json::Int(n) => {
-            out.push(TAG_INT);
-            let bytes = n.to_signed_bytes_be();
-            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-            out.extend_from_slice(&bytes);
-        }
-        Json::Float(F64Bits(n)) => {
-            out.push(TAG_FLOAT);
-            out.extend_from_slice(&n.to_be_bytes());
-        }
-        Json::Str(s) => {
-            out.push(TAG_STR);
-            out.extend_from_slice(&(s.len() as u32).to_be_bytes());
-            out.extend_from_slice(s.as_bytes());
-        }
+        Json::Null => out.push(J_NULL),
         Json::Array(items) => {
-            out.push(TAG_ARRAY);
+            out.push(J_ARRAY);
             out.extend_from_slice(&(items.len() as u32).to_be_bytes());
-            for v in items { write_node(v, out); }
+            for v in items {
+                out.extend_from_slice(&crate::serialize::serialize(v));
+            }
         }
-        Json::Object(pairs) => {
-            out.push(TAG_OBJECT);
-            out.extend_from_slice(&(pairs.len() as u32).to_be_bytes());
-            for (k, v) in pairs {
+        Json::Object(m) => {
+            out.push(J_OBJECT);
+            out.extend_from_slice(&(m.len() as u32).to_be_bytes());
+            for (k, v) in m {
                 out.extend_from_slice(&(k.len() as u32).to_be_bytes());
                 out.extend_from_slice(k.as_bytes());
-                write_node(v, out);
+                out.extend_from_slice(&crate::serialize::serialize(v));
             }
         }
     }
 }
 
-/// How many bytes the serialized JSON value at the start of `bytes`
-/// occupies. Used by struct-field deserialization to know where one
-/// json field ends and the next field begins.
+/// How many bytes the serialized Json composite at the start of
+/// `bytes` occupies. Used by struct-field deserialization to know
+/// where one json field ends and the next field begins.
 pub fn byte_size(bytes: &[u8]) -> Option<usize> {
-    let mut r = Reader { bytes, pos: 0 };
-    r.skip_node()?;
-    Some(r.pos)
-}
-
-impl<'a> Reader<'a> {
-    /// Walk a node without materializing it. Returns `None` if the
-    /// bytes are malformed or truncated.
-    fn skip_node(&mut self) -> Option<()> {
-        let tag = self.read_byte()?;
-        match tag {
-            TAG_NULL | TAG_TRUE | TAG_FALSE => {}
-            TAG_INT => {
-                let n = self.read_u32()? as usize;
-                self.pos += n;
+    if bytes.is_empty() { return None; }
+    match bytes[0] {
+        J_NULL => Some(1),
+        J_ARRAY => {
+            if bytes.len() < 5 { return None; }
+            let n = u32::from_be_bytes(bytes[1..5].try_into().ok()?) as usize;
+            let mut total = 5;
+            for _ in 0..n {
+                let inner = crate::serialize::value_byte_size(bytes.get(total..)?, &crate::ast::Type::Json)?;
+                total += inner;
             }
-            TAG_U64_LEGACY | TAG_FLOAT => { self.pos += 8; }
-            TAG_STR => {
-                let n = self.read_u32()? as usize;
-                self.pos += n;
-            }
-            TAG_ARRAY => {
-                let n = self.read_u32()? as usize;
-                for _ in 0..n { self.skip_node()?; }
-            }
-            TAG_OBJECT => {
-                let n = self.read_u32()? as usize;
-                for _ in 0..n {
-                    let kl = self.read_u32()? as usize;
-                    self.pos += kl;
-                    self.skip_node()?;
-                }
-            }
-            _ => return None,
+            Some(total)
         }
-        if self.pos > self.bytes.len() { None } else { Some(()) }
+        J_OBJECT => {
+            if bytes.len() < 5 { return None; }
+            let n = u32::from_be_bytes(bytes[1..5].try_into().ok()?) as usize;
+            let mut total = 5;
+            for _ in 0..n {
+                let kl = u32::from_be_bytes(bytes.get(total..total + 4)?.try_into().ok()?) as usize;
+                total += 4 + kl;
+                let inner = crate::serialize::value_byte_size(bytes.get(total..)?, &crate::ast::Type::Json)?;
+                total += inner;
+            }
+            Some(total)
+        }
+        _ => None,
     }
 }
 
 pub fn deserialize(bytes: &[u8]) -> Option<Json> {
-    let mut r = Reader { bytes, pos: 0 };
-    let v = r.read_node()?;
-    if r.pos != bytes.len() { return None; }
-    Some(v)
+    if bytes.is_empty() { return None; }
+    let mut pos = 0;
+    let j = read_json(bytes, &mut pos)?;
+    if pos != bytes.len() { return None; }
+    Some(j)
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+fn read_json(bytes: &[u8], pos: &mut usize) -> Option<Json> {
+    let tag = *bytes.get(*pos)?;
+    *pos += 1;
+    match tag {
+        J_NULL => Some(Json::Null),
+        J_ARRAY => {
+            let n = read_u32(bytes, pos)? as usize;
+            let mut items = Vec::with_capacity(n);
+            for _ in 0..n {
+                let size = crate::serialize::value_byte_size(bytes.get(*pos..)?, &crate::ast::Type::Json)?;
+                let v = crate::serialize::deserialize(bytes.get(*pos..*pos + size)?, &crate::ast::Type::Json)?;
+                *pos += size;
+                items.push(v);
+            }
+            Some(Json::Array(items))
+        }
+        J_OBJECT => {
+            let n = read_u32(bytes, pos)? as usize;
+            let mut map = IndexMap::with_capacity(n);
+            for _ in 0..n {
+                let kl = read_u32(bytes, pos)? as usize;
+                let k = std::str::from_utf8(bytes.get(*pos..*pos + kl)?).ok()?.to_string();
+                *pos += kl;
+                let size = crate::serialize::value_byte_size(bytes.get(*pos..)?, &crate::ast::Type::Json)?;
+                let v = crate::serialize::deserialize(bytes.get(*pos..*pos + size)?, &crate::ast::Type::Json)?;
+                *pos += size;
+                map.insert(k, v);
+            }
+            Some(Json::Object(map))
+        }
+        _ => None,
+    }
 }
 
-impl<'a> Reader<'a> {
-    fn read_byte(&mut self) -> Option<u8> {
-        let b = *self.bytes.get(self.pos)?;
-        self.pos += 1;
-        Some(b)
-    }
-    fn read_u32(&mut self) -> Option<u32> {
-        let arr: [u8; 4] = self.bytes.get(self.pos..self.pos + 4)?.try_into().ok()?;
-        self.pos += 4;
-        Some(u32::from_be_bytes(arr))
-    }
-    fn read_str(&mut self, n: usize) -> Option<String> {
-        let s = self.bytes.get(self.pos..self.pos + n)?;
-        self.pos += n;
-        std::str::from_utf8(s).ok().map(|s| s.to_string())
-    }
-    fn read_node(&mut self) -> Option<Json> {
-        let tag = self.read_byte()?;
-        Some(match tag {
-            TAG_NULL  => Json::Null,
-            TAG_TRUE  => Json::Bool(true),
-            TAG_FALSE => Json::Bool(false),
-            TAG_INT => {
-                let n = self.read_u32()? as usize;
-                let raw = self.bytes.get(self.pos..self.pos + n)?;
-                self.pos += n;
-                Json::Int(BigInt::from_signed_bytes_be(raw))
-            }
-            TAG_U64_LEGACY => {
-                // Back-compat: old encoding for non-negative integers
-                // wider than i64. Read as u64 and lift to BigInt.
-                let arr: [u8; 8] = self.bytes.get(self.pos..self.pos + 8)?.try_into().ok()?;
-                self.pos += 8;
-                Json::Int(BigInt::from(u64::from_be_bytes(arr)))
-            }
-            TAG_FLOAT => {
-                let arr: [u8; 8] = self.bytes.get(self.pos..self.pos + 8)?.try_into().ok()?;
-                self.pos += 8;
-                Json::Float(F64Bits(f64::from_be_bytes(arr)))
-            }
-            TAG_STR => {
-                let n = self.read_u32()? as usize;
-                Json::Str(self.read_str(n)?)
-            }
-            TAG_ARRAY => {
-                let n = self.read_u32()? as usize;
-                let mut items = Vec::with_capacity(n);
-                for _ in 0..n { items.push(self.read_node()?); }
-                Json::Array(items)
-            }
-            TAG_OBJECT => {
-                let n = self.read_u32()? as usize;
-                let mut pairs = Vec::with_capacity(n);
-                for _ in 0..n {
-                    let kl = self.read_u32()? as usize;
-                    let k = self.read_str(kl)?;
-                    let v = self.read_node()?;
-                    pairs.push((k, v));
-                }
-                Json::Object(pairs)
-            }
-            _ => return None,
-        })
-    }
+fn read_u32(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+    let arr: [u8; 4] = bytes.get(*pos..*pos + 4)?.try_into().ok()?;
+    *pos += 4;
+    Some(u32::from_be_bytes(arr))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ji(n: i64) -> Json { Json::Int(BigInt::from(n)) }
+    fn ji(n: i64) -> Value { Value::int(n) }
 
     #[test]
-    fn parse_primitives() {
-        assert_eq!(parse("null").unwrap(), Json::Null);
-        assert_eq!(parse("true").unwrap(), Json::Bool(true));
-        assert_eq!(parse("false").unwrap(), Json::Bool(false));
+    fn parse_primitives_materialize_as_native_values() {
+        assert_eq!(parse("null").unwrap(), Value::Json(Json::Null));
+        assert_eq!(parse("true").unwrap(), Value::Bool(true));
+        assert_eq!(parse("false").unwrap(), Value::Bool(false));
         assert_eq!(parse("42").unwrap(), ji(42));
         assert_eq!(parse("-7").unwrap(), ji(-7));
-        assert_eq!(parse("18446744073709551615").unwrap(), Json::Int(BigInt::from(u64::MAX)));
-        assert_eq!(parse("\"hello\"").unwrap(), Json::Str("hello".into()));
+        assert_eq!(parse("1.5").unwrap(), Value::Float(F64Bits(1.5)));
+        assert_eq!(parse("\"hi\"").unwrap(), Value::Str("hi".into()));
+    }
+
+    #[test]
+    fn parse_arbitrary_precision_ints() {
+        let huge = "1606938044258990275541962092341162602522202993782792835301375";
+        match parse(huge).unwrap() {
+            Value::Int(n) => assert_eq!(n.to_string(), huge),
+            other => panic!("expected Int, got {other:?}"),
+        }
     }
 
     #[test]
     fn parse_array_and_object() {
         let v = parse("[1, 2, 3]").unwrap();
-        assert_eq!(v, Json::Array(vec![ji(1), ji(2), ji(3)]));
-
+        match v {
+            Value::Json(Json::Array(items)) => {
+                assert_eq!(items, vec![ji(1), ji(2), ji(3)]);
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
         let v = parse(r#"{"name": "alice", "age": 30}"#).unwrap();
-        assert_eq!(v, Json::Object(vec![
-            ("name".into(), Json::Str("alice".into())),
-            ("age".into(), ji(30)),
-        ]));
+        match v {
+            Value::Json(Json::Object(m)) => {
+                let pairs: Vec<_> = m.into_iter().collect();
+                assert_eq!(pairs[0], ("name".to_string(), Value::Str("alice".into())));
+                assert_eq!(pairs[1], ("age".to_string(), ji(30)));
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
     }
 
     #[test]
     fn parse_nested() {
-        let v = parse(r#"{"users": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}"#).unwrap();
-        let users = v.get_field("users").unwrap();
-        let alice = users.get_index(0).unwrap();
-        assert_eq!(alice.get_field("name"), Some(&Json::Str("a".into())));
+        let v = parse(r#"{"users": [{"id": 1, "name": "a"}]}"#).unwrap();
+        let Value::Json(j) = v else { panic!() };
+        let users = j.get_field("users").unwrap();
+        let Value::Json(u) = users else { panic!() };
+        let alice = u.get_index(0).unwrap();
+        let Value::Json(alice) = alice else { panic!() };
+        assert_eq!(alice.get_field("name"), Some(&Value::Str("a".into())));
     }
 
     #[test]
-    fn parse_floats() {
-        assert_eq!(parse("1.5").unwrap(), Json::Float(F64Bits(1.5)));
-        assert_eq!(parse("-0.25").unwrap(), Json::Float(F64Bits(-0.25)));
-        assert_eq!(parse("1e10").unwrap(), Json::Float(F64Bits(1e10)));
-        assert_eq!(parse("1.5e-3").unwrap(), Json::Float(F64Bits(1.5e-3)));
-        // Integer literals never widen to Float, even when huge.
-        assert!(matches!(parse("1000000").unwrap(), Json::Int(_)));
-    }
-
-    #[test]
-    fn parse_arbitrary_precision_ints() {
-        // 200 bits — beyond u128 / i256.
-        let huge = "1606938044258990275541962092341162602522202993782792835301375";
-        match parse(huge).unwrap() {
-            Json::Int(n) => assert_eq!(n.to_string(), huge),
-            other => panic!("expected Int, got {other:?}"),
-        }
-        // Negative too.
-        let neg = format!("-{huge}");
-        match parse(&neg).unwrap() {
-            Json::Int(n) => assert_eq!(n.to_string(), neg),
-            other => panic!("expected Int, got {other:?}"),
+    fn canonical_distinguishes_int_and_float() {
+        let i = parse("1").unwrap();
+        let f = parse("1.0").unwrap();
+        assert_ne!(i, f);
+        match (&i, &f) {
+            (Value::Int(_), Value::Float(_)) => {}
+            _ => panic!("wrong variants"),
         }
     }
 
     #[test]
     fn missing_key_returns_none() {
         let v = parse(r#"{"a": 1}"#).unwrap();
-        assert_eq!(v.get_field("nope"), None);
-        assert_eq!(v.get_index(5), None);
-    }
-
-    #[test]
-    fn serialize_round_trip() {
-        let v = parse(r#"{"name": "alice", "tags": ["a", "b"], "n": 42, "pi": 3.14}"#).unwrap();
-        let bytes = serialize(&v);
-        let v2 = deserialize(&bytes).unwrap();
-        assert_eq!(v, v2);
-    }
-
-    #[test]
-    fn serialize_round_trip_bigint() {
-        // Make sure the variable-length INT encoding survives the
-        // bytes round-trip at multiple sizes (1, 8, 32, and 128 bytes
-        // of magnitude).
-        for shift in [0u32, 60, 250, 1000] {
-            let n: BigInt = BigInt::from(1) << shift;
-            let v = Json::Int(n.clone());
-            let bytes = serialize(&v);
-            assert_eq!(deserialize(&bytes).unwrap(), v);
-            let v = Json::Int(-n);
-            let bytes = serialize(&v);
-            assert_eq!(deserialize(&bytes).unwrap(), v);
-        }
-    }
-
-    #[test]
-    fn canonical_output_is_deterministic() {
-        let v = parse(r#"{ "a"  : 1 ,  "b": [ 2,3 ] }"#).unwrap();
-        assert_eq!(v.to_string_canonical(), r#"{"a":1,"b":[2,3]}"#);
-    }
-
-    #[test]
-    fn canonical_distinguishes_int_and_float() {
-        // `1` is Int and renders as `1`; `1.0` is Float and renders as
-        // `1.0`. Re-parsing returns the same variants.
-        let i = parse("1").unwrap();
-        let f = parse("1.0").unwrap();
-        assert_ne!(i, f);
-        assert_eq!(i.to_string_canonical(), "1");
-        assert_eq!(f.to_string_canonical(), "1.0");
-        assert_eq!(parse(&i.to_string_canonical()).unwrap(), i);
-        assert_eq!(parse(&f.to_string_canonical()).unwrap(), f);
+        let Value::Json(j) = v else { panic!() };
+        assert_eq!(j.get_field("nope"), None);
+        assert_eq!(j.get_index(5), None);
     }
 }

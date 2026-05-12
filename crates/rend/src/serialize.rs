@@ -366,6 +366,26 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
         (TAG_JSON, Type::Json) => {
             crate::json::deserialize(rest).map(Value::Json)
         }
+        // Json-typed cells are *polymorphic* — a `state x: json;` may
+        // hold any rend primitive (parsed from a leaf JSON value)
+        // OR a `Value::Json` composite. When the expected type is
+        // `Type::Json` and the tag is a primitive's, dispatch the
+        // primitive deserializer with its native type instead.
+        (TAG_INT, Type::Json) => {
+            deserialize(bytes, &Type::Int)
+        }
+        (TAG_UINT, Type::Json) => {
+            deserialize(bytes, &Type::UInt)
+        }
+        (TAG_FLOAT, Type::Json) => {
+            deserialize(bytes, &Type::Float)
+        }
+        (TAG_BOOL, Type::Json) => {
+            deserialize(bytes, &Type::Bool)
+        }
+        (TAG_STRING, Type::Json) => {
+            deserialize(bytes, &Type::String)
+        }
         (TAG_PVEC, Type::PVec { .. }) => {
             let len_bytes: [u8; 8] = rest.get(..8)?.try_into().ok()?;
             let root_bytes: [u8; 16] = rest.get(8..24)?.try_into().ok()?;
@@ -384,6 +404,12 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+/// Public alias for `sized_value`. Used by `json::byte_size` to
+/// step through a Json composite's polymorphic elements.
+pub fn value_byte_size(bytes: &[u8], ty: &Type) -> Option<usize> {
+    sized_value(bytes, ty)
 }
 
 /// Returns the byte length of the next encoded value of type `ty` at the
@@ -440,6 +466,15 @@ fn sized_value(bytes: &[u8], ty: &Type) -> Option<usize> {
             let inner = crate::json::byte_size(bytes.get(1..)?)?;
             Some(1 + inner)
         }
+        // Polymorphic json field shapes — when the field type is
+        // `Type::Json` but the stored value is a primitive (parsed
+        // from a leaf JSON), the tag is the primitive's. Recurse
+        // with the primitive's native type to size correctly.
+        (TAG_INT, Type::Json) => sized_value(bytes, &Type::Int),
+        (TAG_UINT, Type::Json) => sized_value(bytes, &Type::UInt),
+        (TAG_FLOAT, Type::Json) => sized_value(bytes, &Type::Float),
+        (TAG_BOOL, Type::Json) => sized_value(bytes, &Type::Bool),
+        (TAG_STRING, Type::Json) => sized_value(bytes, &Type::String),
         (TAG_INTERFACE, Type::Interface { .. }) => {
             let ilen = u32::from_be_bytes(bytes.get(1..5)?.try_into().ok()?) as usize;
             let off = 1 + 4 + ilen;
