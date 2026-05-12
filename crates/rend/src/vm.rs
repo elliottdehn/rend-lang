@@ -1038,7 +1038,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     return Ok(Value::Unit);
                 }
                 Instr::ParallelForBegin {
-                    body_start, body_end: _, source_reg, output_reg, id_reg, after_pc,
+                    body_start, body_end: _, source_reg, output_reg, id_reg, idx_reg, after_pc,
                 } => {
                     use rayon::prelude::*;
                     // Force source and output to concrete arrays.
@@ -1084,6 +1084,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             .map(|i| -> Result<(crate::tx::HandlerDelta, Value, u64, bool), Error> {
                                 let mut leg_regs = regs_snapshot.clone();
                                 leg_regs[id_reg as usize] = source_elems[i].clone();
+                                leg_regs[idx_reg as usize] = Value::int(i as i64);
                                 let mut shadow = Tx::shadow_of(parent);
                                 let mut sub = VmState {
                                     fuel: fuel_budget,
@@ -1115,6 +1116,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             // Re-run this leg against the merged parent.
                             let mut leg_regs = regs.clone();
                             leg_regs[id_reg as usize] = source_elems[i].clone();
+                            leg_regs[idx_reg as usize] = Value::int(i as i64);
                             let mut shadow = Tx::shadow_of(&*self.tx);
                             let pre = self.fuel;
                             let mut sub = VmState {

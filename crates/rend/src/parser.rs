@@ -1138,7 +1138,23 @@ impl Parser {
         // `parallel { ... }` block; lookahead picks between them.
         if self.peek_is(&Token::For) {
             self.advance(); // consume `for`
-            let id_var = self.expect_ident()?;
+            // Two binding forms:
+            //   `parallel for x in src to out { body }`
+            //       — body sees only the element `x`.
+            //   `parallel for (i, x) in src to out { body }`
+            //       — body sees the iteration index `i: u64` *and*
+            //         the element `x: T`. The index is useful when
+            //         pairing with a separately-reserved slot range.
+            let (idx_var, id_var) = if self.peek_is(&Token::LParen) {
+                self.advance();
+                let first = self.expect_ident()?;
+                self.expect(Token::Comma, "expected ',' in parallel-for pattern")?;
+                let second = self.expect_ident()?;
+                self.expect(Token::RParen, "expected ')' to close parallel-for pattern")?;
+                (Some(first), second)
+            } else {
+                (None, self.expect_ident()?)
+            };
             self.expect(Token::In, "expected 'in' in parallel-for")?;
             let saved = self.no_struct_literal;
             self.no_struct_literal = true;
@@ -1164,6 +1180,7 @@ impl Parser {
             let end = body.span.end;
             return Ok(Stmt::ParallelForTo {
                 id_var,
+                idx_var,
                 source,
                 output,
                 body,

@@ -194,6 +194,38 @@ fn parallel_for_to_source_accepts_any_array_element_type() {
 }
 
 #[test]
+fn parallel_for_to_tuple_pattern_binds_index_and_element() {
+    // `parallel for (i, x) in source to output { body }` binds
+    // the iteration index `i: int` and the element `x: T`
+    // independently. The index makes it natural to pair the
+    // iteration with a separately-reserved slot range.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module pfto;
+        state forward: pmap<string, u64>;
+        state next_id:  u64;
+        entry fn intern_at(s: string, slot: u64) -> u64 {
+            let e = forward[s];
+            if e > 0u64 { return e; }
+            forward[s] = slot;
+            return slot;
+        }
+        fn main() -> u64 {
+            let inputs = `["a", "b", "c"]`;
+            let slots = reserve 3u64 from next_id;
+            let ids   = arr<u64>[3u64];
+            parallel for (i, s) in inputs to ids {
+                intern_at(s, slots[i])
+            }
+            return ids[0i64] + ids[1i64] + ids[2i64];
+        }
+    "#;
+    // slots = [1,2,3]; ids = [1,2,3]; sum = 6
+    let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(6));
+}
+
+#[test]
 fn parallel_for_to_iterates_over_string_payload() {
     // The headline use case for non-u64 source: the JIT-codegen
     // layer embeds a payload array of strings as an explicit

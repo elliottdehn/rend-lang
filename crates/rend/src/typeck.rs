@@ -535,16 +535,21 @@ fn annotate_stmt(
                 annotate_stmt(s, scopes, state_types, ifaces);
             }
         }
-        Stmt::ParallelForTo { id_var, source, output, body, .. } => {
+        Stmt::ParallelForTo { id_var, idx_var, source, output, body, .. } => {
             annotate_expr(source, scopes, state_types, ifaces);
             annotate_expr(output, scopes, state_types, ifaces);
             // Source may be any `[T]`; `id_var` binds to T. The
             // annotation pass only needs an approximation to thread
             // interface-resolution dyncalls, so we don't bother
             // walking the source expression for its element type
-            // here — U64 is a fine placeholder.
+            // here — U64 is a fine placeholder. `idx_var` (when
+            // present) is always u64.
             scopes.push(HashMap::new());
             scopes.last_mut().unwrap().insert(id_var.clone(), Type::U64);
+            if let Some(idx) = idx_var {
+                // `idx` is `int` (i64) so it indexes arrays directly.
+                scopes.last_mut().unwrap().insert(idx.clone(), Type::Int);
+            }
             annotate_block(body, scopes, state_types, ifaces);
             scopes.pop();
         }
@@ -1678,7 +1683,7 @@ impl TypeChecker {
                 }
                 Ok(false)
             }
-            Stmt::ParallelForTo { id_var, source, output, body, span } => {
+            Stmt::ParallelForTo { id_var, idx_var, source, output, body, span } => {
                 // Source can be any `[T]`. The per-leg `id_var` binds
                 // to T (the element type of the source array). The
                 // reserve-from-counter pattern is the common case and
@@ -1717,9 +1722,15 @@ impl TypeChecker {
                 };
                 // Body type-checks against the outer scope plus the
                 // per-iteration id binding (typed as the source's
-                // element type).
+                // element type) and the optional idx binding (u64).
                 env.push(HashMap::new());
                 env.last_mut().unwrap().insert(id_var.clone(), elem_id_ty);
+                if let Some(idx) = idx_var {
+                    // `idx` is `int` (i64) — the same type rend uses
+                    // for array indexing, so `output[idx]` and
+                    // `slots[idx]` work directly.
+                    env.last_mut().unwrap().insert(idx.clone(), Type::Int);
+                }
                 let body_tail = self.check_block_as_expr(body, env)?;
                 env.pop();
                 if !types_compatible(&body_tail, &elem_ty) {

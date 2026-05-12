@@ -909,7 +909,7 @@ impl<'a> FnCompiler<'a> {
                 };
                 Ok(())
             }
-            Stmt::ParallelForTo { id_var, source, output, body, .. } => {
+            Stmt::ParallelForTo { id_var, idx_var, source, output, body, .. } => {
                 // Source is evaluated once into a fresh register and
                 // frozen as the per-leg id pool.
                 let source_reg = self.alloc();
@@ -939,10 +939,17 @@ impl<'a> FnCompiler<'a> {
                 // Reserve a register for the per-iteration id binding.
                 // Each parallel leg patches this reg before running
                 // body bytecode; from the body's perspective `id_var`
-                // is just a local of type u64.
+                // is just a local. Always allocate `idx_reg` too —
+                // the dispatcher writes the iteration index there
+                // whether or not the user bound it (cost: one Move
+                // per leg, no semantic impact).
                 let id_reg = self.alloc();
+                let idx_reg = self.alloc();
                 self.scopes.push(HashMap::new());
                 self.scopes.last_mut().unwrap().insert(id_var.clone(), id_reg);
+                if let Some(idx) = idx_var {
+                    self.scopes.last_mut().unwrap().insert(idx.clone(), idx_reg);
+                }
                 // Placeholder for the dispatcher op; patched below
                 // once body_start/body_end/after_pc are known.
                 let dispatch_pos = self.code.len();
@@ -952,6 +959,7 @@ impl<'a> FnCompiler<'a> {
                     source_reg,
                     output_reg,
                     id_reg,
+                    idx_reg,
                     after_pc: 0,
                 });
                 // Compile the body. Tail value lives in `tail_reg`;
@@ -978,6 +986,7 @@ impl<'a> FnCompiler<'a> {
                     source_reg,
                     output_reg,
                     id_reg,
+                    idx_reg,
                     after_pc,
                 };
                 Ok(())

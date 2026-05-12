@@ -299,6 +299,12 @@ pub enum Instr {
         source_reg: u16,
         output_reg: u16,
         id_reg: u16,
+        /// Per-leg iteration index. The dispatcher writes `i as
+        /// u64` to this register before running the body's
+        /// bytecode. Always allocated by the compile pass even
+        /// when the user didn't bind `(idx, x)`; the cost is one
+        /// register and a per-leg Move, no semantic impact.
+        idx_reg: u16,
         after_pc: u32,
     },
     /// `arr<T>[N]` — allocate a fresh `[T]` of length `len_reg`

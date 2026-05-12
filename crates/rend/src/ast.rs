@@ -556,6 +556,17 @@ pub enum Stmt {
     /// go through the shadow-Tx delta merge with conflict re-run.
     ParallelForTo {
         id_var: String,
+        /// Optional iteration-index binding. When the source-side
+        /// pattern is `(idx, x)`, `idx_var = Some("idx")` and the
+        /// body sees both the iteration index (u64) and the
+        /// element (T). `None` for the plain `parallel for x in ...`
+        /// form. The index is useful when pairing the iteration
+        /// with a separately-reserved slot range, e.g.
+        ///   `let slots = reserve N from next_id;`
+        ///   `parallel for (i, x) in inputs to ids {`
+        ///     `intern_at(x, slots[i])`
+        ///   `}`
+        idx_var: Option<String>,
         source: Expr,
         output: Expr,
         body: Block,

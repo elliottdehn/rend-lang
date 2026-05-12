@@ -689,7 +689,7 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Flow::Normal(Value::Unit))
             }
-            Stmt::ParallelForTo { id_var, source, output, body, span } => {
+            Stmt::ParallelForTo { id_var, idx_var, source, output, body, span } => {
                 // Reference semantics — serial loop. Bytecode VM will
                 // dispatch in parallel; observable result is the same
                 // because slot writes are disjoint by construction.
@@ -751,6 +751,11 @@ impl<'a> Interp<'a> {
                 for (i, id_val) in src_elems.into_iter().enumerate() {
                     scopes.push(Scope::default());
                     scopes.last_mut().unwrap().vars.insert(id_var.clone(), id_val);
+                    if let Some(idx) = idx_var {
+                        scopes.last_mut().unwrap().vars.insert(
+                            idx.clone(), Value::int(i as i64),
+                        );
+                    }
                     let flow = self.exec_block(body, scopes)?;
                     scopes.pop();
                     match flow {

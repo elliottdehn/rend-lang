@@ -1019,7 +1019,7 @@ fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
             }
         }
         Instr::ParallelForBegin {
-            body_start, body_end, source_reg, output_reg, id_reg, after_pc,
+            body_start, body_end, source_reg, output_reg, id_reg, idx_reg, after_pc,
         } => {
             out.push(op::PARALLEL_FOR_BEGIN);
             write_u32(out, *body_start);
@@ -1027,6 +1027,7 @@ fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
             write_u16(out, *source_reg);
             write_u16(out, *output_reg);
             write_u16(out, *id_reg);
+            write_u16(out, *idx_reg);
             write_u32(out, *after_pc);
         }
         Instr::ArrayAlloc { dst, len_reg, default_reg } => {
@@ -1281,9 +1282,10 @@ fn read_instr(r: &mut Reader) -> Result<Instr, Error> {
             let source_reg = r.read_u16()?;
             let output_reg = r.read_u16()?;
             let id_reg = r.read_u16()?;
+            let idx_reg = r.read_u16()?;
             let after_pc = r.read_u32()?;
             Instr::ParallelForBegin {
-                body_start, body_end, source_reg, output_reg, id_reg, after_pc,
+                body_start, body_end, source_reg, output_reg, id_reg, idx_reg, after_pc,
             }
         }
         op::ARRAY_ALLOC => Instr::ArrayAlloc {

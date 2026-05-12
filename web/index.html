@@ -181,34 +181,36 @@
 <span class="k">state</span> reverse: <span class="k">pmap</span>&lt;<span class="t">u64</span>, <span class="t">string</span>&gt;;   <span class="c">// id → content</span>
 <span class="k">state</span> next_id: <span class="t">u64</span>;                 <span class="c">// sole intentionally-contended cell</span>
 
-<span class="c">// One read on a dedup hit; two writes + counter bump on a miss.</span>
-<span class="k">entry fn</span> intern(s: <span class="t">string</span>) -&gt; <span class="t">u64</span> {
+<span class="c">// One read on a dedup hit; two writes on a miss. The slot comes</span>
+<span class="c">// from a caller-side `reserve`, so this function never contends</span>
+<span class="c">// on `next_id`.</span>
+<span class="k">entry fn</span> intern_at(s: <span class="t">string</span>, slot: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing &gt; <span class="n">0u64</span> { <span class="k">return</span> existing; }
-    <span class="k">let</span> id = next_id + <span class="n">1u64</span>;
-    next_id = id;
-    forward[s] = id;
-    reverse[id] = s;
-    <span class="k">return</span> id;
+    forward[s] = slot;
+    reverse[slot] = s;
+    <span class="k">return</span> slot;
 }
 
 <span class="c">// The transaction. The JIT-codegen layer synthesizes the body</span>
 <span class="c">// from an incoming payload: the inputs array is embedded as an</span>
 <span class="c">// *explicit literal* so the parser refuses any code-shaped</span>
-<span class="c">// fragment. `parallel for` fans the interns into shadow Txs that</span>
-<span class="c">// hit disjoint pmap cells (HAMT-disjoint per content key); if two</span>
-<span class="c">// legs raced on the same string the merge re-runs the loser</span>
-<span class="c">// against the winner's write and observes the existing id.</span>
-<span class="c">// No retry loops, no per-call subtransaction tax.</span>
+<span class="c">// fragment. `reserve` does one atomic counter bump for the</span>
+<span class="c">// whole batch; the parallel-for legs then hit disjoint pmap</span>
+<span class="c">// cells (HAMT-disjoint per content key). If two legs raced on</span>
+<span class="c">// the same string, the merge re-runs the loser against the</span>
+<span class="c">// winner's write and observes the existing id — no retry</span>
+<span class="c">// loops, no per-call subtransaction tax.</span>
 <span class="c">//</span>
 <span class="c">// `main` returns whatever shape the request needs — here, the array</span>
 <span class="c">// of canonical ids the caller can use to look the strings back up.</span>
 <span class="k">fn</span> main() -&gt; [<span class="t">u64</span>] {
     <span class="k">let</span> inputs = <span class="k">`</span>[<span class="s">"alpha"</span>, <span class="s">"beta"</span>, <span class="s">"gamma"</span>, <span class="s">"delta"</span>]<span class="k">`</span>;
-    <span class="k">let</span> ids = <span class="k">arr</span>&lt;<span class="t">u64</span>&gt;[<span class="n">4u64</span>];
+    <span class="k">let</span> slots  = <span class="k">reserve</span> <span class="n">4u64</span> <span class="k">from</span> next_id;
+    <span class="k">let</span> ids    = <span class="k">arr</span>&lt;<span class="t">u64</span>&gt;[<span class="n">4u64</span>];
 
-    <span class="k">parallel for</span> s <span class="k">in</span> inputs <span class="k">to</span> ids {
-        intern(s)
+    <span class="k">parallel for</span> (i, s) <span class="k">in</span> inputs <span class="k">to</span> ids {
+        intern_at(s, slots[i])
     }
 
     <span class="k">return</span> ids;
