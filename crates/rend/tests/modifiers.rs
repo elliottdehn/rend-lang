@@ -29,7 +29,7 @@ fn simple_modifier_runs_before_and_after_body() {
             return count;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1101));
+    assert_eq!(v, Value::int(1101i64));
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn modifier_with_arg_binds_param_textually() {
     let out = Engine::new()
         .execute_with_context(src, ctx, Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(99));
+    assert_eq!(out.result, Value::int(99i64));
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn multiple_modifiers_compose_left_to_right() {
         }
     ").unwrap();
     // Final log: [1, 2, 3, 4, 5] → length 5.
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn modifier_emits_event_around_body() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(7));
+    assert_eq!(out.result, Value::int(7i64));
     let names: Vec<&str> = out.events.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, vec!["Entered", "Exited"]);
 }
@@ -210,5 +210,5 @@ fn nore_and_modifier_compose() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1110));
+    assert_eq!(v, Value::int(1110i64));
 }

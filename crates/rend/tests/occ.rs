@@ -50,8 +50,8 @@ fn disjoint_writes_commit_without_re_execution() {
 
     assert_eq!(report.conflicts, 0);
     assert!(report.txs.iter().all(|t| !t.re_executed));
-    assert_eq!(kv.get_typed(root("x"), &Type::Int), Some(Value::Int(7)));
-    assert_eq!(kv.get_typed(root("y"), &Type::Int), Some(Value::Int(9)));
+    assert_eq!(kv.get_typed(root("x"), &Type::Int), Some(Value::int(7i64)));
+    assert_eq!(kv.get_typed(root("y"), &Type::Int), Some(Value::int(9i64)));
 }
 
 #[test]
@@ -72,9 +72,9 @@ fn conflicting_writes_force_re_execution() {
     assert_eq!(report.conflicts, 1);
     assert_eq!(report.txs[0].re_executed, false);
     assert_eq!(report.txs[1].re_executed, true);
-    assert_eq!(report.txs[0].result, Value::Int(1));
-    assert_eq!(report.txs[1].result, Value::Int(2));
-    assert_eq!(kv.get_typed(root("count"), &Type::Int), Some(Value::Int(2)));
+    assert_eq!(report.txs[0].result, Value::int(1i64));
+    assert_eq!(report.txs[1].result, Value::int(2i64));
+    assert_eq!(kv.get_typed(root("count"), &Type::Int), Some(Value::int(2i64)));
 }
 
 #[test]
@@ -92,10 +92,10 @@ fn voting_disjoint_voters_disjoint_choices_no_conflicts() {
     .unwrap();
 
     assert_eq!(report.conflicts, 0);
-    assert_eq!(kv.get_typed(cell("votes", &Value::Int(1)), &Type::Int), Some(Value::Int(1)));
-    assert_eq!(kv.get_typed(cell("votes", &Value::Int(2)), &Type::Int), Some(Value::Int(1)));
-    assert_eq!(kv.get_typed(cell("tally", &Value::Int(10)), &Type::Int), Some(Value::Int(1)));
-    assert_eq!(kv.get_typed(cell("tally", &Value::Int(20)), &Type::Int), Some(Value::Int(1)));
+    assert_eq!(kv.get_typed(cell("votes", &Value::int(1i64)), &Type::Int), Some(Value::int(1i64)));
+    assert_eq!(kv.get_typed(cell("votes", &Value::int(2i64)), &Type::Int), Some(Value::int(1i64)));
+    assert_eq!(kv.get_typed(cell("tally", &Value::int(10i64)), &Type::Int), Some(Value::int(1i64)));
+    assert_eq!(kv.get_typed(cell("tally", &Value::int(20i64)), &Type::Int), Some(Value::int(1i64)));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn voting_same_choice_conflicts_but_both_committed() {
     assert_eq!(report.conflicts, 1);
     assert_eq!(report.txs[0].result, Value::Bool(true));
     assert_eq!(report.txs[1].result, Value::Bool(true));
-    assert_eq!(kv.get_typed(cell("tally", &Value::Int(7)), &Type::Int), Some(Value::Int(2)));
+    assert_eq!(kv.get_typed(cell("tally", &Value::int(7i64)), &Type::Int), Some(Value::int(2i64)));
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn double_vote_is_rejected_after_re_execution() {
     assert_eq!(report.conflicts, 1);
     assert_eq!(report.txs[0].result, Value::Bool(true));
     assert_eq!(report.txs[1].result, Value::Bool(false));
-    assert_eq!(kv.get_typed(cell("tally", &Value::Int(5)), &Type::Int), Some(Value::Int(1)));
+    assert_eq!(kv.get_typed(cell("tally", &Value::int(5i64)), &Type::Int), Some(Value::int(1i64)));
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn batch_result_matches_serial_execution() {
 
     assert_eq!(kv_occ.data, kv_serial.data);
     assert_eq!(
-        kv_occ.get_typed(cell("tally", &Value::Int(9)), &Type::Int),
-        Some(Value::Int(5)),
+        kv_occ.get_typed(cell("tally", &Value::int(9i64)), &Type::Int),
+        Some(Value::int(5i64)),
     );
 }

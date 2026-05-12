@@ -674,7 +674,7 @@ mod tests {
         let mut h = starting_root;
         for (k, v) in entries {
             h = rend::pmap::set(
-                h, Value::Int(*k), Value::Int(*v),
+                h, Value::int(*k), Value::int(*v),
                 &mut tx,
                 &Type::Int, &Type::Int,
             ).unwrap();
@@ -740,8 +740,8 @@ mod tests {
         let mut tx = rend::tx::Tx::new(&view);
         for (k, expected) in &[(1, 10), (2, 20), (99, 9900)] {
             assert_eq!(
-                rend::pmap::get(final_root, &Value::Int(*k), &mut tx, &Type::Int, &Type::Int),
-                Some(Value::Int(*expected)),
+                rend::pmap::get(final_root, &Value::int(*k), &mut tx, &Type::Int, &Type::Int),
+                Some(Value::int(*expected)),
                 "key {k} missing from merged tree",
             );
         }

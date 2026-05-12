@@ -16,7 +16,7 @@ fn while_loop_factorial() {
             return acc;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(720));
+    assert_eq!(v, Value::int(720i64));
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn while_loop_with_zero_iterations() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn for_in_sums_array() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(31));
+    assert_eq!(v, Value::int(31i64));
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn for_in_with_break() {
             return first;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(7));
+    assert_eq!(v, Value::int(7i64));
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn while_with_continue_skips_iteration() {
         }
     ").unwrap();
     // 1+2+3+4+ (skip 5) +6+7+8+9+10 = 50
-    assert_eq!(v, Value::Int(50));
+    assert_eq!(v, Value::int(50i64));
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn nested_loops_inner_break_doesnt_escape_outer() {
         }
     ").unwrap();
     // outer iters: x=1,2,3 → each adds 10 once before inner break
-    assert_eq!(v, Value::Int(30));
+    assert_eq!(v, Value::int(30i64));
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn local_mutable_counter_is_observable_outside_loop() {
             return count;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn while_with_early_return() {
         }
         fn main() -> i64 { return first_pos([-3, -1, 4, 9]); }
     ").unwrap();
-    assert_eq!(v, Value::Int(4));
+    assert_eq!(v, Value::int(4i64));
 }
 
 #[test]
@@ -154,5 +154,5 @@ fn example_18_loops_runs() {
     let kv = rend::kv::InMemoryKv::new();
     let src = std::fs::read_to_string("examples/18_loops.rd").unwrap();
     let out = Engine::new().execute(&src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(749));
+    assert_eq!(out.result, Value::int(749i64));
 }

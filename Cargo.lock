@@ -1310,6 +1310,8 @@ dependencies = [
  "futures-util",
  "hex",
  "http",
+ "num-bigint",
+ "num-traits",
  "rand",
  "rend",
  "rend-rocksdb",

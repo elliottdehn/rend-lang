@@ -40,9 +40,16 @@ const TAG_JSON: u8 = 0x1a;
 pub fn serialize(value: &Value) -> Vec<u8> {
     match value {
         Value::Int(n) => {
-            let mut out = Vec::with_capacity(9);
+            // BigInt has variable byte length. Format:
+            //   TAG_INT | u32 byte_count | <signed BE bytes>
+            // Empty payload is *not* zero — `BigInt::to_signed_bytes_be`
+            // returns at least one byte for any value including zero,
+            // so deserialization is unambiguous.
+            let bytes = n.to_signed_bytes_be();
+            let mut out = Vec::with_capacity(5 + bytes.len());
             out.push(TAG_INT);
-            out.extend_from_slice(&n.to_be_bytes());
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            out.extend_from_slice(&bytes);
             out
         }
         Value::I32(n) => {
@@ -207,8 +214,12 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
     let (tag, rest) = bytes.split_first()?;
     match (*tag, expected) {
         (TAG_INT, Type::Int) => {
-            let arr: [u8; 8] = rest.try_into().ok()?;
-            Some(Value::Int(i64::from_be_bytes(arr)))
+            // Variable-length signed BigInt: u32 length prefix
+            // then `length` signed BE bytes.
+            if rest.len() < 4 { return None; }
+            let n_bytes = u32::from_be_bytes(rest[..4].try_into().ok()?) as usize;
+            if rest.len() != 4 + n_bytes { return None; }
+            Some(Value::Int(num_bigint::BigInt::from_signed_bytes_be(&rest[4..])))
         }
         (TAG_I32, Type::I32) => {
             let arr: [u8; 4] = rest.try_into().ok()?;
@@ -348,7 +359,14 @@ pub fn deserialize(bytes: &[u8], expected: &Type) -> Option<Value> {
 fn sized_value(bytes: &[u8], ty: &Type) -> Option<usize> {
     let tag = *bytes.first()?;
     match (tag, ty) {
-        (TAG_INT, Type::Int) | (TAG_RESOURCE, Type::Resource) => Some(1 + 8),
+        (TAG_INT, Type::Int) => {
+            // Variable-length BigInt: 1 tag byte + 4 length bytes +
+            // N data bytes.
+            let len_bytes: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
+            let n = u32::from_be_bytes(len_bytes) as usize;
+            Some(1 + 4 + n)
+        }
+        (TAG_RESOURCE, Type::Resource) => Some(1 + 8),
         (TAG_I32, Type::I32) | (TAG_U32, Type::U32) => Some(1 + 4),
         (TAG_U64, Type::U64) => Some(1 + 8),
         (TAG_U128, Type::U128) => Some(1 + 16),
@@ -418,8 +436,9 @@ fn sized_value(bytes: &[u8], ty: &Type) -> Option<usize> {
 /// Returns `true` if `value` is the canonical default for its type.
 /// Used to make OCC validation tolerate unset cells.
 pub fn is_default(value: &Value) -> bool {
+    use num_traits::Zero;
     match value {
-        Value::Int(0) => true,
+        Value::Int(n) if n.is_zero() => true,
         Value::I32(0) => true,
         Value::U32(0) => true,
         Value::U64(0) => true,
@@ -451,8 +470,8 @@ mod tests {
 
     #[test]
     fn round_trip_primitives() {
-        round_trip(Value::Int(42), Type::Int);
-        round_trip(Value::Int(-99), Type::Int);
+        round_trip(Value::int(42), Type::Int);
+        round_trip(Value::int(-99), Type::Int);
         round_trip(Value::Bool(true), Type::Bool);
         round_trip(Value::Bool(false), Type::Bool);
         round_trip(Value::Unit, Type::Unit);
@@ -473,16 +492,16 @@ mod tests {
 
     #[test]
     fn type_mismatch_returns_none() {
-        let bytes = serialize(&Value::Int(7));
+        let bytes = serialize(&Value::int(7));
         assert!(deserialize(&bytes, &Type::Bool).is_none());
     }
 
     #[test]
     fn defaults_are_recognized() {
-        assert!(is_default(&Value::Int(0)));
+        assert!(is_default(&Value::int(0)));
         assert!(is_default(&Value::Bool(false)));
         assert!(is_default(&Value::Str("".into())));
-        assert!(!is_default(&Value::Int(1)));
+        assert!(!is_default(&Value::int(1)));
         assert!(!is_default(&Value::Str("x".into())));
     }
 }

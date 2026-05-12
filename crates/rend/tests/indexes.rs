@@ -210,7 +210,7 @@ fn multi_index_collects_keys_per_field_value() {
             return len(by_dept[\"eng\"]);    // {1, 2, 4}
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn multi_index_dedupes_repeated_writes() {
             return len(by_dept[\"eng\"]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1));
+    assert_eq!(v, Value::int(1i64));
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn multi_index_disjoint_field_values_dont_share_cells() {
             return len(by_dept[\"eng\"]) + len(by_dept[\"sales\"]) * 10;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(11));   // 1 + 1*10
+    assert_eq!(v, Value::int(11i64));   // 1 + 1*10
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn multi_index_empty_lookup_returns_empty_array() {
             return len(by_dept[\"nonexistent\"]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn multi_index_works_on_bytecode_vm() {
     let outcome = Engine::new()
         .execute(src, Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(outcome.result, Value::Int(3));
+    assert_eq!(outcome.result, Value::int(3i64));
 }
 
 #[test]
@@ -553,7 +553,7 @@ fn multi_sorted_index_collects_keys_per_field_value() {
             return len(by_age[25u64]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 #[test]
@@ -579,7 +579,7 @@ fn multi_sorted_index_range_query_returns_grouped_lists() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]

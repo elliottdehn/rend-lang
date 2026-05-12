@@ -21,7 +21,7 @@ fn assert_errors(src: &str, contains: &str) {
 
 #[test]
 fn returns_constant_int() {
-    assert_runs_to("fn main() -> i64 { return 42; }", Value::Int(42));
+    assert_runs_to("fn main() -> i64 { return 42; }", Value::int(42i64));
 }
 
 #[test]
@@ -31,16 +31,16 @@ fn returns_constant_bool() {
 
 #[test]
 fn arithmetic_precedence() {
-    assert_runs_to("fn main() -> i64 { return 1 + 2 * 3; }", Value::Int(7));
-    assert_runs_to("fn main() -> i64 { return (1 + 2) * 3; }", Value::Int(9));
-    assert_runs_to("fn main() -> i64 { return 10 - 3 - 2; }", Value::Int(5));
-    assert_runs_to("fn main() -> i64 { return 8 / 4 / 2; }", Value::Int(1));
-    assert_runs_to("fn main() -> i64 { return 17 % 5; }", Value::Int(2));
+    assert_runs_to("fn main() -> i64 { return 1 + 2 * 3; }", Value::int(7i64));
+    assert_runs_to("fn main() -> i64 { return (1 + 2) * 3; }", Value::int(9i64));
+    assert_runs_to("fn main() -> i64 { return 10 - 3 - 2; }", Value::int(5i64));
+    assert_runs_to("fn main() -> i64 { return 8 / 4 / 2; }", Value::int(1i64));
+    assert_runs_to("fn main() -> i64 { return 17 % 5; }", Value::int(2i64));
 }
 
 #[test]
 fn unary_minus_and_not() {
-    assert_runs_to("fn main() -> i64 { return -5 + 7; }", Value::Int(2));
+    assert_runs_to("fn main() -> i64 { return -5 + 7; }", Value::int(2i64));
     assert_runs_to("fn main() -> bool { return !false; }", Value::Bool(true));
     assert_runs_to("fn main() -> bool { return !!true; }", Value::Bool(true));
 }
@@ -71,14 +71,14 @@ fn let_binds_locals() {
         let y = 10;
         return x + y;
     }";
-    assert_runs_to(src, Value::Int(15));
+    assert_runs_to(src, Value::int(15i64));
 }
 
 #[test]
 fn function_call_with_args() {
     let src = "entry fn add(a: i64, b: i64) -> i64 { return a + b; }
                fn main() -> i64 { return add(2, 3); }";
-    assert_runs_to(src, Value::Int(5));
+    assert_runs_to(src, Value::int(5i64));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn recursive_fibonacci() {
         return fib(n - 1) + fib(n - 2);
     }
     fn main() -> i64 { return fib(10); }";
-    assert_runs_to(src, Value::Int(55));
+    assert_runs_to(src, Value::int(55i64));
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn if_else_branching() {
         if x > 5 { return 100; }
         else { return 200; }
     }";
-    assert_runs_to(src, Value::Int(100));
+    assert_runs_to(src, Value::int(100i64));
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn else_if_chain() {
         else { return 1; }
     }
     fn main() -> i64 { return classify(0); }";
-    assert_runs_to(src, Value::Int(0));
+    assert_runs_to(src, Value::int(0i64));
 }
 
 #[test]
@@ -119,14 +119,14 @@ fn line_comments_dont_break_anything() {
         // local
         return 1 + 1; // trailing
     }";
-    assert_runs_to(src, Value::Int(2));
+    assert_runs_to(src, Value::int(2i64));
 }
 
 #[test]
 fn unit_returning_function_needs_no_return() {
     let src = "entry fn nop() {}
                fn main() -> i64 { nop(); return 1; }";
-    assert_runs_to(src, Value::Int(1));
+    assert_runs_to(src, Value::int(1i64));
 }
 
 // ----- runtime errors -----
@@ -142,8 +142,12 @@ fn modulo_by_zero_is_runtime_error() {
 }
 
 #[test]
-fn integer_overflow_is_runtime_error() {
-    let src = "fn main() -> i64 { return 9223372036854775807 + 1; }";
+fn sized_integer_overflow_is_runtime_error() {
+    // `int` / `i64` is arbitrary-precision now — adding past i64::MAX
+    // is a valid operation that just produces a bigger BigInt. The
+    // overflow behavior is only meaningful for the fixed-width sized
+    // types; check `u64` here.
+    let src = "fn main() -> u64 { return 18446744073709551615u64 + 1u64; }";
     assert_errors(src, "overflow");
 }
 

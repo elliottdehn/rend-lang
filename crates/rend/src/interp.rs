@@ -212,15 +212,22 @@ impl<'a> Interp<'a> {
     fn try_builtin(&self, name: &str, args: &[Value]) -> Result<Option<Value>, Error> {
         match name {
             "resource" => match args {
-                [Value::Int(n)] => Ok(Some(Value::Resource(*n))),
+                [Value::Int(n)] => match num_traits::ToPrimitive::to_i64(n) {
+                    Some(v) => Ok(Some(Value::Resource(v))),
+                    None => Err(Error::new(
+                        ErrorKind::Runtime,
+                        "resource(): int out of i64 range",
+                        Span::default(),
+                    )),
+                },
                 _ => Err(Error::new(
                     ErrorKind::Runtime,
-                    "resource() expects a single i64",
+                    "resource() expects a single int",
                     Span::default(),
                 )),
             },
             "unwrap" => match args {
-                [Value::Resource(n)] => Ok(Some(Value::Int(*n))),
+                [Value::Resource(n)] => Ok(Some(Value::int(n.clone()))),
                 _ => Err(Error::new(
                     ErrorKind::Runtime,
                     "unwrap() expects a single Resource",
@@ -236,10 +243,10 @@ impl<'a> Interp<'a> {
                 )),
             },
             "len" => match args {
-                [Value::Array(elems)] => Ok(Some(Value::Int(elems.len() as i64))),
-                [Value::Str(s)] => Ok(Some(Value::Int(s.as_bytes().len() as i64))),
-                [Value::Set(elems)] => Ok(Some(Value::Int(elems.len() as i64))),
-                [Value::Dict(pairs)] => Ok(Some(Value::Int(pairs.len() as i64))),
+                [Value::Array(elems)] => Ok(Some(Value::int(elems.len()))),
+                [Value::Str(s)] => Ok(Some(Value::int(s.as_bytes().len()))),
+                [Value::Set(elems)] => Ok(Some(Value::int(elems.len()))),
+                [Value::Dict(pairs)] => Ok(Some(Value::int(pairs.len()))),
                 _ => Err(Error::new(
                     ErrorKind::Runtime,
                     "len() expects array/string/set/dict",
@@ -322,7 +329,7 @@ impl<'a> Interp<'a> {
                 _ => Err(Error::new(ErrorKind::Runtime, "set_contains() expects (set, elem)", Span::default())),
             },
             "set_len" => match args {
-                [Value::Set(s)] => Ok(Some(Value::Int(s.len() as i64))),
+                [Value::Set(s)] => Ok(Some(Value::int(s.len()))),
                 _ => Err(Error::new(ErrorKind::Runtime, "set_len() expects (set)", Span::default())),
             },
             "dict_set" => match args {
@@ -355,7 +362,7 @@ impl<'a> Interp<'a> {
                 _ => Err(Error::new(ErrorKind::Runtime, "dict_has() expects (dict, key)", Span::default())),
             },
             "dict_len" => match args {
-                [Value::Dict(d)] => Ok(Some(Value::Int(d.len() as i64))),
+                [Value::Dict(d)] => Ok(Some(Value::int(d.len()))),
                 _ => Err(Error::new(ErrorKind::Runtime, "dict_len() expects (dict)", Span::default())),
             },
             "i64" | "i32" | "u32" | "u64" | "u128" => {
@@ -494,11 +501,31 @@ impl<'a> Interp<'a> {
             Stmt::ForRange { var, start, end, inclusive, body, span } => {
                 let s = self.eval(start, scopes)?;
                 let e = self.eval(end, scopes)?;
-                // Generic over int types: cast both to i128 for the
-                // count, then re-wrap each iteration's value to match
-                // the start's type.
+                // Two iterator shapes:
+                //   * BigInt loop for `int` (unbounded counter, must
+                //     not be cast to a fixed-width type).
+                //   * i128 loop for the sized integer types — wide
+                //     enough to hold any of i32/u32/u64/u128's range,
+                //     with a per-variant constructor to re-wrap.
+                if let (Value::Int(a), Value::Int(b)) = (&s, &e) {
+                    let mut i = a.clone();
+                    let lim = b.clone();
+                    while if *inclusive { i <= lim } else { i < lim } {
+                        scopes.push(Scope::default());
+                        scopes.last_mut().unwrap().vars
+                            .insert(var.clone(), Value::Int(i.clone()));
+                        let flow = self.exec_block(body, scopes)?;
+                        scopes.pop();
+                        match flow {
+                            Flow::Normal(_) | Flow::Continue => {}
+                            Flow::Break => break,
+                            Flow::Return(v) => return Ok(Flow::Return(v)),
+                        }
+                        i += 1;
+                    }
+                    return Ok(Flow::Normal(Value::Unit));
+                }
                 let (mut i, lim, ctor): (i128, i128, fn(i128) -> Value) = match (&s, &e) {
-                    (Value::Int(a), Value::Int(b))   => (*a as i128, *b as i128, |n| Value::Int(n as i64)),
                     (Value::U64(a), Value::U64(b))   => (*a as i128, *b as i128, |n| Value::U64(n as u64)),
                     (Value::I32(a), Value::I32(b))   => (*a as i128, *b as i128, |n| Value::I32(n as i32)),
                     (Value::U32(a), Value::U32(b))   => (*a as i128, *b as i128, |n| Value::U32(n as u32)),
@@ -1053,7 +1080,7 @@ impl<'a> Interp<'a> {
 
     fn eval(&self, expr: &Expr, scopes: &mut Vec<Scope>) -> Result<Value, Error> {
         match &expr.kind {
-            ExprKind::Int(n) => Ok(Value::Int(*n)),
+            ExprKind::Int(n) => Ok(Value::int(n.clone())),
             ExprKind::I32(n) => Ok(Value::I32(*n)),
             ExprKind::U32(n) => Ok(Value::U32(*n)),
             ExprKind::U64(n) => Ok(Value::U64(*n)),
@@ -1085,10 +1112,17 @@ impl<'a> Interp<'a> {
                     if let Some(Type::PVec { elem }) = self.state_types.get(state_name).cloned() {
                         let key_v = self.eval(key, scopes)?;
                         let i = match key_v {
-                            Value::Int(n) if n >= 0 => n as u64,
+                            Value::Int(ref n) => match num_traits::ToPrimitive::to_u64(n) {
+                                Some(v) => v,
+                                None => return Err(Error::new(
+                                    ErrorKind::Runtime,
+                                    format!("pvec index out of u64 range: {n}"),
+                                    expr.span,
+                                )),
+                            },
                             other => return Err(Error::new(
                                 ErrorKind::Runtime,
-                                format!("pvec index: expected non-negative i64, got {other}"),
+                                format!("pvec index: expected non-negative int, got {other}"),
                                 expr.span,
                             )),
                         };
@@ -1139,14 +1173,15 @@ impl<'a> Interp<'a> {
                 let idx_v = self.eval(key, scopes)?;
                 match (arr_v, idx_v) {
                     (Value::Array(elems), Value::Int(i)) => {
-                        if i < 0 || (i as usize) >= elems.len() {
-                            return Err(Error::new(
+                        let idx = match num_traits::ToPrimitive::to_usize(&i) {
+                            Some(v) if v < elems.len() => v,
+                            _ => return Err(Error::new(
                                 ErrorKind::Runtime,
                                 format!("array index out of bounds: {i} of {}", elems.len()),
                                 expr.span,
-                            ));
-                        }
-                        Ok(elems[i as usize].clone())
+                            )),
+                        };
+                        Ok(elems[idx].clone())
                     }
                     (a, k) => Err(Error::new(
                         ErrorKind::Runtime,
@@ -1725,10 +1760,17 @@ impl<'a> Interp<'a> {
                 // pvec indexed assignment.
                 if let Some(Type::PVec { elem }) = self.state_types.get(state_name).cloned() {
                     let i = match key_v {
-                        Value::Int(n) if n >= 0 => n as u64,
+                        Value::Int(ref n) => match num_traits::ToPrimitive::to_u64(n) {
+                            Some(v) => v,
+                            None => return Err(Error::new(
+                                ErrorKind::Runtime,
+                                format!("pvec index out of u64 range: {n}"),
+                                target.span,
+                            )),
+                        },
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
-                            format!("pvec index: expected non-negative i64, got {other}"),
+                            format!("pvec index: expected non-negative int, got {other}"),
                             target.span,
                         )),
                     };

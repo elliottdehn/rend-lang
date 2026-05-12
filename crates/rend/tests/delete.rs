@@ -165,7 +165,7 @@ fn delete_filters_multi_index_list() {
             return len(by_dept[\"eng\"]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn delete_filters_pbtree_multi_index() {
             return len(by_age[30u64]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1));
+    assert_eq!(v, Value::int(1i64));
 }
 
 // ---------- bytecode VM parity ----------

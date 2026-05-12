@@ -17,7 +17,7 @@ fn imported_pure_function_returns_to_guest() {
         fn main() -> i64 { return triple(7); }
     ";
     let r = engine.run(src, Fuel::new(1000)).unwrap();
-    assert_eq!(r, Value::Int(21));
+    assert_eq!(r, Value::int(21i64));
 }
 
 #[test]
@@ -39,10 +39,12 @@ fn host_side_effects_are_observable() {
     let mut engine = Engine::new();
     engine.bind("log_int", move |args| {
         if let [Value::Int(n)] = args {
-            captured2.lock().unwrap().push(*n);
+            captured2.lock().unwrap().push(
+                num_traits::ToPrimitive::to_i64(n).expect("fits"),
+            );
             Ok(Value::Unit)
         } else {
-            Err(HostError::invalid_args("log_int: expected single i64"))
+            Err(HostError::invalid_args("log_int: expected single int"))
         }
     });
 

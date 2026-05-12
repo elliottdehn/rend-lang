@@ -22,12 +22,12 @@ fn read(name: &str) -> String {
 
 #[test]
 fn example_01_arithmetic_runs_to_fib_20() {
-    assert_eq!(run(&read("01_arithmetic.rd")).unwrap(), Value::Int(6765));
+    assert_eq!(run(&read("01_arithmetic.rd")).unwrap(), Value::int(6765i64));
 }
 
 #[test]
 fn example_02_typed_runs() {
-    assert_eq!(run(&read("02_typed.rd")).unwrap(), Value::Int(42));
+    assert_eq!(run(&read("02_typed.rd")).unwrap(), Value::int(42i64));
 }
 
 #[test]
@@ -55,19 +55,21 @@ fn example_05_runs_via_engine_with_host_impls() {
     let mut engine = Engine::new();
     engine.bind("host_log", move |args| {
         if let [Value::Int(n)] = args {
-            log_for_closure.lock().unwrap().push(*n);
+            log_for_closure.lock().unwrap().push(
+                num_traits::ToPrimitive::to_i64(n).expect("fits"),
+            );
             Ok(Value::Unit)
         } else {
-            Err(HostError::invalid_args("host_log: expected single i64"))
+            Err(HostError::invalid_args("host_log: expected single int"))
         }
     });
     engine.bind("host_double", |args| match args {
-        [Value::Int(n)] => Ok(Value::Int(n * 2)),
+        [Value::Int(n)] => Ok(Value::int(n * 2)),
         _ => Err(HostError::invalid_args("host_double: expected single i64")),
     });
 
     let result = engine.run(&read("05_host_imports.rd"), Fuel::new(10_000)).unwrap();
-    assert_eq!(result, Value::Int(42));
+    assert_eq!(result, Value::int(42i64));
     assert_eq!(*log.lock().unwrap(), vec![42]);
 }
 
@@ -86,7 +88,7 @@ fn example_10_arrays_runs_with_state() {
     let out = Engine::new()
         .execute(&read("10_arrays.rd"), Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(150)); // 10+20+30+40+50
+    assert_eq!(out.result, Value::int(150i64)); // 10+20+30+40+50
 }
 
 #[test]
@@ -95,7 +97,7 @@ fn example_11_structs_runs_with_state() {
     let out = Engine::new()
         .execute(&read("11_structs.rd"), Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(120));
+    assert_eq!(out.result, Value::int(120i64));
 }
 
 #[test]
@@ -104,5 +106,5 @@ fn example_16_auction_runs_with_state() {
     let out = Engine::new()
         .execute(&read("16_auction.rd"), Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(150));
+    assert_eq!(out.result, Value::int(150i64));
 }

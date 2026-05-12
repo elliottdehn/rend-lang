@@ -127,7 +127,7 @@ pub enum ReadOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
-    Int(i64),
+    Int(num_bigint::BigInt),
     I32(i32),
     U32(u32),
     U64(u64),

@@ -18,7 +18,7 @@ fn assign_field_of_local_struct() {
             return p.x + p.y;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(102));
+    assert_eq!(v, Value::int(102i64));
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn assign_field_then_field() {
             return p.x + p.y;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(30));
+    assert_eq!(v, Value::int(30i64));
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn nested_field_path_mutation() {
             return o.a.v + o.b;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(142));
+    assert_eq!(v, Value::int(142i64));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn field_assign_uses_existing_field_in_rhs() {
             return p.x;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(105));
+    assert_eq!(v, Value::int(105i64));
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn field_assign_in_state_struct() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(12));
+    assert_eq!(out.result, Value::int(12i64));
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn field_assign_persists_across_calls() {
         fn main() -> i64 { return origin.x; }
     ";
     let out2 = Engine::new().execute(src2, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out2.result, Value::Int(99));
+    assert_eq!(out2.result, Value::int(99i64));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn helper_returning_modified_struct() {
             return b.x + b.y;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(103));
+    assert_eq!(v, Value::int(103i64));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn field_path_inside_loop() {
             return a.sum + a.count;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(63));
+    assert_eq!(v, Value::int(63i64));
 }
 
 #[test]
@@ -165,5 +165,5 @@ fn example_24_advanced_returns_321() {
     let kv = rend::kv::InMemoryKv::new();
     let src = std::fs::read_to_string("examples/24_advanced.rd").unwrap();
     let out = Engine::new().execute(&src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(321));
+    assert_eq!(out.result, Value::int(321i64));
 }

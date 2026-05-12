@@ -43,7 +43,7 @@ fn cross_module_call_dispatches_correctly() {
     let out = Engine::new()
         .execute_main(&sources, "main", Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(100));
+    assert_eq!(out.result, Value::int(100i64));
 }
 
 #[test]
@@ -85,12 +85,12 @@ fn each_modules_state_is_namespaced_separately() {
     let out = Engine::new()
         .execute_main(&sources, "main", Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(12)); // alpha=2, beta=10
+    assert_eq!(out.result, Value::int(12i64)); // alpha=2, beta=10
 
     let alpha_root = state_root("alpha", "count");
     let beta_root = state_root("beta", "count");
-    assert_eq!(out.writes.get(&alpha_root), Some(&Value::Int(2)));
-    assert_eq!(out.writes.get(&beta_root), Some(&Value::Int(10)));
+    assert_eq!(out.writes.get(&alpha_root), Some(&Value::int(2i64)));
+    assert_eq!(out.writes.get(&beta_root), Some(&Value::int(10i64)));
     assert_ne!(alpha_root, beta_root, "module-namespacing must distinguish state roots");
 }
 
@@ -180,9 +180,9 @@ fn folder_example_12_runs_end_to_end() {
     // Verify writes touched the right namespaced cells:
     let recipient_addr = Value::Address("0xrecipient".into());
     let recipient_cell = child(state_root("ledger", "balances"), &serialize(&recipient_addr));
-    assert_eq!(out.writes.get(&recipient_cell), Some(&Value::Int(100)));
+    assert_eq!(out.writes.get(&recipient_cell), Some(&Value::int(100i64)));
 
-    let proposal_cell = child(state_root("governance", "proposals"), &serialize(&Value::Int(42)));
+    let proposal_cell = child(state_root("governance", "proposals"), &serialize(&Value::int(42i64)));
     assert_eq!(out.writes.get(&proposal_cell), Some(&Value::Bool(true)));
 
     // governance's state and ledger's state are distinct namespaces.

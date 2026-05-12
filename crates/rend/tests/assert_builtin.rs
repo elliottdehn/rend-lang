@@ -16,7 +16,7 @@ fn assert_true_returns_unit_and_program_continues() {
             return 42;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn assert_does_not_break_static_read_clustering() {
             return x + y;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn assert_in_loop_passes_for_all_iterations() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(15));
+    assert_eq!(v, Value::int(15i64));
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn assert_then_return_works_as_invariant_check() {
             return b.balance;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(70));
+    assert_eq!(v, Value::int(70i64));
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn assert_is_compatible_with_bytecode_vm() {
         "fn main() -> i64 { assert(true); return 7; }",
         rend::Fuel::new(1000),
     ).unwrap();
-    assert_eq!(v, Value::Int(7));
+    assert_eq!(v, Value::int(7i64));
 
     let err = rend::run_bc(
         "fn main() -> i64 { assert(false); return 7; }",

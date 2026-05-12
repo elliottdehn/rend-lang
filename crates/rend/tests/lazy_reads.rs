@@ -92,7 +92,7 @@ fn comprehension_with_chained_readonly_calls_batches_to_one_round_trip() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(60));
+    assert_eq!(out.result, Value::int(60i64));
     // Every read flowed up through Pending; all three flushed in
     // one batch at `bals[0] + bals[1] + bals[2]`.
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1);
@@ -121,7 +121,7 @@ fn call_returning_pending_propagates_to_caller() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(84));
+    assert_eq!(out.result, Value::int(84i64));
     // Single batch — both lookups of n share one queued read by the
     // tx's read cache (second call hits writes/reads cache).
     assert!(
@@ -161,7 +161,7 @@ fn pending_propagates_through_array_construction() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(10));
+    assert_eq!(out.result, Value::int(10i64));
     // The static optimizer already clusters all four into one
     // ReadBatch at the array literal — so we expect one get_many.
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1);
@@ -191,7 +191,7 @@ fn pending_through_struct_field_propagation() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(300));
+    assert_eq!(out.result, Value::int(300i64));
     // Both reads queue, batch at the final Bin Add.
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1);
 }
@@ -222,7 +222,7 @@ fn map_cell_read_is_lazy_and_batches_with_others() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(107));
+    assert_eq!(out.result, Value::int(107i64));
     // Two reads, one batched flush at the Bin Add.
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1);
     assert_eq!(kv.gets.load(Ordering::Relaxed),      0);
@@ -246,7 +246,7 @@ fn pending_value_returned_from_topframe_is_forced_for_host() {
         fn main() -> i64 { return n; }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(99));
+    assert_eq!(out.result, Value::int(99i64));
     // The result must not be Pending — host wouldn't know how to
     // interpret it. No way to assert this directly, but if force
     // didn't run we'd have failed the equality above.
@@ -275,7 +275,7 @@ fn unconsumed_reads_still_appear_in_read_set() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
     // Both reads must still be in the OCC read set even though their
     // values went nowhere.
     let a_root = rend::hashing::state_root("main", "a");
@@ -334,7 +334,7 @@ fn cross_module_call_chain_batches_through_lazy_reads() {
             &lat,
         )
         .unwrap();
-    assert_eq!(out.result, Value::Int(66));
+    assert_eq!(out.result, Value::int(66i64));
     // All three cross-module calls returned Pending; flushed in one
     // batch at the array's first consumer.
     assert_eq!(lat.get_manys.load(Ordering::Relaxed), 1);
@@ -382,7 +382,7 @@ fn ten_independent_reads_via_calls_batch_to_one() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(55));
+    assert_eq!(out.result, Value::int(55i64));
     // The first iteration of the for-loop is the first consumer; one
     // flush covers all ten queued reads.
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1);
@@ -419,7 +419,7 @@ fn aggregating_loop_still_needs_static_prefetch() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(6));
+    assert_eq!(out.result, Value::int(6i64));
     // Static prefetch warms balances[1..=3] in one batch before the
     // loop runs; in-loop MapGets serve from cache.
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1);

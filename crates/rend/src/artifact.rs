@@ -441,7 +441,12 @@ mod const_tag {
 
 fn write_const(out: &mut Vec<u8>, c: &Const) {
     match c {
-        Const::Int(n)  => { out.push(const_tag::INT);  write_i64(out, *n); }
+        Const::Int(n)  => {
+            out.push(const_tag::INT);
+            let bytes = n.to_signed_bytes_be();
+            write_u32(out, bytes.len() as u32);
+            out.extend_from_slice(&bytes);
+        }
         Const::I32(n)  => { out.push(const_tag::I32);  write_i32(out, *n); }
         Const::U32(n)  => { out.push(const_tag::U32);  write_u32(out, *n); }
         Const::U64(n)  => { out.push(const_tag::U64);  write_u64(out, *n); }
@@ -454,7 +459,11 @@ fn write_const(out: &mut Vec<u8>, c: &Const) {
 fn read_const(r: &mut Reader) -> Result<Const, Error> {
     let tag = r.read_u8()?;
     Ok(match tag {
-        const_tag::INT  => Const::Int(r.read_i64()?),
+        const_tag::INT  => {
+            let n = r.read_u32()? as usize;
+            let bytes = r.take_bytes(n)?.to_vec();
+            Const::Int(num_bigint::BigInt::from_signed_bytes_be(&bytes))
+        }
         const_tag::I32  => Const::I32(r.read_i32()?),
         const_tag::U32  => Const::U32(r.read_u32()?),
         const_tag::U64  => Const::U64(r.read_u64()?),

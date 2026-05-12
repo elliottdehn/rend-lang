@@ -44,7 +44,7 @@ fn execute_modules_groups_by_declared_name() {
     let out = Engine::new()
         .execute_modules(&sources, "main", Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(15));
+    assert_eq!(out.result, Value::int(15i64));
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn example_25_nft_marketplace_runs() {
 
     // The buy moved NFT #1 to bob.
     let owners_root = state_root("nft", "owners");
-    let owner_cell = child(owners_root, &serialize(&Value::Int(1)));
+    let owner_cell = child(owners_root, &serialize(&Value::int(1i64)));
     assert_eq!(out.writes.get(&owner_cell), Some(&Value::Address("0xb0b".into())));
 
     // The buy and the cancel both flipped `active` to false. The Listing
@@ -152,8 +152,8 @@ fn example_25_nft_marketplace_runs() {
     // of that whole cell. After the trade, the cell should hold an inactive
     // Listing for #1 and #2.
     let listings_root = state_root("market", "listings");
-    let l1 = child(listings_root, &serialize(&Value::Int(1)));
-    let l2 = child(listings_root, &serialize(&Value::Int(2)));
+    let l1 = child(listings_root, &serialize(&Value::int(1i64)));
+    let l2 = child(listings_root, &serialize(&Value::int(2i64)));
     let active = |cell| match out.writes.get(cell) {
         Some(Value::Struct { fields, .. }) => fields
             .iter()
@@ -290,7 +290,7 @@ fn lending_open_rejected_when_undercollateralized() {
     let out = Engine::new()
         .execute_modules(&srcs, "main", Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(-1));
+    assert_eq!(out.result, Value::int(-1i64));
 }
 
 #[test]
@@ -402,7 +402,7 @@ fn lending_disjoint_borrowers_dont_conflict() {
 
     // Confirm only the allocator and the freshly-claimed loan id collide.
     let next_id_root = state_root("loans", "next_id");
-    let book_id1 = child(state_root("loans", "book"), &serialize(&Value::Int(1)));
+    let book_id1 = child(state_root("loans", "book"), &serialize(&Value::int(1i64)));
     let mut overlap_w: Vec<_> = a_w.intersection(&b_w).copied().collect();
     overlap_w.sort();
     let mut expected = vec![next_id_root, book_id1];

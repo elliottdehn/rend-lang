@@ -222,7 +222,7 @@ fn tx_can_call_into_multiple_deps() {
         .execute_tx(&tx, &[counter, logger], Fuel::new(20_000), &kv)
         .unwrap();
     // counter.get() = 2, logger.log() = 2 (after bumping twice). 2*100 + 2 = 202.
-    assert_eq!(out.result, Value::Int(202));
+    assert_eq!(out.result, Value::int(202i64));
 }
 
 // ---------- deploy: optional constructor ----------
@@ -284,7 +284,7 @@ fn deploy_is_noop_when_program_has_no_main() {
     ";
     let tx = Engine::new().compile_tx(tx_src, &[lib.clone()]).unwrap();
     let out = Engine::new().execute_tx(&tx, &[lib], Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(42));
+    assert_eq!(out.result, Value::int(42i64));
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn deploy_constructor_writes_become_initial_state() {
     let tx = Engine::new().compile_tx(tx_src, &[counter.clone()]).unwrap();
     let out = Engine::new().execute_tx(&tx, &[counter], Fuel::new(20_000), &kv).unwrap();
     // Constructor set n=100; tx bumped once → n=101.
-    assert_eq!(out.result, Value::Int(101));
+    assert_eq!(out.result, Value::int(101i64));
 }
 
 #[test]

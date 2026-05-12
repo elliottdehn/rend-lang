@@ -57,7 +57,7 @@ fn pmap_with_int_keys() {
             return scores[1] + scores[2] + scores[3];
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(60));
+    assert_eq!(v, Value::int(60i64));
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn pmap_with_string_keys() {
             return tags["banana"];
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 // ---------- pmap_contains ----------
@@ -194,7 +194,7 @@ fn pmap_persists_across_transactions() {
         }
     ";
     let out = Engine::new().execute(src2, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(300));
+    assert_eq!(out.result, Value::int(300i64));
 }
 
 // ---------- tree-spread storage ----------
@@ -253,7 +253,7 @@ fn tree_spread_handles_large_pmap() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0 + 1000 + 1998));
+    assert_eq!(out.result, Value::int(0 + 1000 + 1998i64));
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn pmap_overwrite_reads_back_latest() {
             return s[1] + s[2];
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(999 + 888));
+    assert_eq!(v, Value::int(999 + 888i64));
 }
 
 // ---------- CRDT-style merge in the OCC validator ----------
@@ -371,7 +371,7 @@ fn parallel_disjoint_inserts_merge_without_re_execution() {
     let out = Engine::new()
         .execute(read_back_src, Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(300));
+    assert_eq!(out.result, Value::int(300i64));
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn many_parallel_disjoint_inserts_all_merge() {
         let out = Engine::new()
             .execute(&src, Fuel::new(10_000), &kv)
             .unwrap();
-        assert_eq!(out.result, Value::Int(k * 10), "key {k} missing");
+        assert_eq!(out.result, Value::int(k * 10), "key {k} missing");
     }
 }
 

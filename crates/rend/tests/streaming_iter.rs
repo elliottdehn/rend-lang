@@ -198,7 +198,7 @@ fn streaming_comprehension_over_pvec() {
     let outcome = Engine::new()
         .execute(src, Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(outcome.result, Value::Int(30));
+    assert_eq!(outcome.result, Value::int(30i64));
 }
 
 // ---------- early break saves real cell fetches ----------
@@ -323,5 +323,5 @@ fn streaming_comprehension_break_via_filter_is_full_walk() {
     let outcome = Engine::new()
         .execute(src, Fuel::new(500_000), &kv)
         .unwrap();
-    assert_eq!(outcome.result, Value::Int(0));
+    assert_eq!(outcome.result, Value::int(0i64));
 }

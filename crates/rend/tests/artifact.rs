@@ -70,7 +70,7 @@ fn artifact_round_trips_through_bytes() {
     // as running the original.
     let kv = InMemoryKv::new();
     let out = Engine::new().execute_artifact(&b, "main", Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(3));
+    assert_eq!(out.result, Value::int(3i64));
 }
 
 // ---------- source vs artifact equivalence ----------
@@ -90,7 +90,7 @@ fn execute_artifact_matches_execute_source_simple() {
         .execute_artifact(&artifact, "main", Fuel::new(1_000_000), &InMemoryKv::new())
         .unwrap();
     assert_eq!(from_source.result, from_artifact.result);
-    assert_eq!(from_source.result, Value::Int(610));
+    assert_eq!(from_source.result, Value::int(610i64));
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn multi_module_artifact_runs() {
     let out = Engine::new()
         .execute_artifact(&artifact, "main", Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(15));
+    assert_eq!(out.result, Value::int(15i64));
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn multi_module_artifact_round_trips() {
     let out = Engine::new()
         .execute_artifact(&b, "main", Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(42));
+    assert_eq!(out.result, Value::int(42i64));
 }
 
 // ---------- validation ----------

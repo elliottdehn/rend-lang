@@ -777,8 +777,8 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        assert!(get(EMPTY, &Value::Int(1), &mut tx, &Type::Int, &Type::Int).is_none());
-        assert!(!contains(EMPTY, &Value::Int(1), &mut tx, &Type::Int, &Type::Int));
+        assert!(get(EMPTY, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int).is_none());
+        assert!(!contains(EMPTY, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int));
     }
 
     #[test]
@@ -786,10 +786,10 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let h = set(EMPTY, Value::Int(1), Value::Int(100), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let h = set(EMPTY, Value::int(1i64), Value::int(100i64), &mut tx, &Type::Int, &Type::Int).unwrap();
         assert_ne!(h, EMPTY);
-        assert!(contains(h, &Value::Int(1), &mut tx, &Type::Int, &Type::Int));
-        assert_eq!(get(h, &Value::Int(1), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(100)));
+        assert!(contains(h, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int));
+        assert_eq!(get(h, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(100i64)));
     }
 
     #[test]
@@ -797,9 +797,9 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let h = set(EMPTY, Value::Int(1), Value::Int(10), &mut tx, &Type::Int, &Type::Int).unwrap();
-        let h = set(h, Value::Int(1), Value::Int(20), &mut tx, &Type::Int, &Type::Int).unwrap();
-        assert_eq!(get(h, &Value::Int(1), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(20)));
+        let h = set(EMPTY, Value::int(1i64), Value::int(10i64), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let h = set(h, Value::int(1i64), Value::int(20i64), &mut tx, &Type::Int, &Type::Int).unwrap();
+        assert_eq!(get(h, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(20i64)));
     }
 
     #[test]
@@ -809,15 +809,15 @@ mod tests {
         let mut tx = fresh_tx(&host, &kv);
         let mut h = EMPTY;
         for i in 0..100i64 {
-            h = set(h, Value::Int(i), Value::Int(i * 10), &mut tx, &Type::Int, &Type::Int).unwrap();
+            h = set(h, Value::int(i), Value::int(i * 10), &mut tx, &Type::Int, &Type::Int).unwrap();
         }
         for i in 0..100i64 {
             assert_eq!(
-                get(h, &Value::Int(i), &mut tx, &Type::Int, &Type::Int),
-                Some(Value::Int(i * 10)),
+                get(h, &Value::int(i), &mut tx, &Type::Int, &Type::Int),
+                Some(Value::int(i * 10)),
             );
         }
-        assert_eq!(get(h, &Value::Int(999), &mut tx, &Type::Int, &Type::Int), None);
+        assert_eq!(get(h, &Value::int(999i64), &mut tx, &Type::Int, &Type::Int), None);
     }
 
     #[test]
@@ -825,13 +825,13 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let h1 = set(EMPTY, Value::Int(1), Value::Int(10), &mut tx, &Type::Int, &Type::Int).unwrap();
-        let h2 = set(h1, Value::Int(2), Value::Int(20), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let h1 = set(EMPTY, Value::int(1i64), Value::int(10i64), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let h2 = set(h1, Value::int(2i64), Value::int(20i64), &mut tx, &Type::Int, &Type::Int).unwrap();
         // h1 is still readable — its nodes weren't rewritten because
         // each new operation writes new nodes at new content hashes.
-        assert!(get(h1, &Value::Int(2), &mut tx, &Type::Int, &Type::Int).is_none());
-        assert_eq!(get(h2, &Value::Int(2), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(20)));
-        assert_eq!(get(h1, &Value::Int(1), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(10)));
+        assert!(get(h1, &Value::int(2i64), &mut tx, &Type::Int, &Type::Int).is_none());
+        assert_eq!(get(h2, &Value::int(2i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(20i64)));
+        assert_eq!(get(h1, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(10i64)));
     }
 
     #[test]
@@ -841,13 +841,13 @@ mod tests {
         let mut tx = fresh_tx(&host, &kv);
         let mut h = EMPTY;
         for i in 0..10i64 {
-            h = set(h, Value::Int(i), Value::Int(i), &mut tx, &Type::Int, &Type::Int).unwrap();
+            h = set(h, Value::int(i), Value::int(i), &mut tx, &Type::Int, &Type::Int).unwrap();
         }
-        let (h, found) = remove(h, &Value::Int(3), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let (h, found) = remove(h, &Value::int(3i64), &mut tx, &Type::Int, &Type::Int).unwrap();
         assert!(found);
-        assert!(!contains(h, &Value::Int(3), &mut tx, &Type::Int, &Type::Int));
-        assert_eq!(get(h, &Value::Int(3), &mut tx, &Type::Int, &Type::Int), None);
-        assert_eq!(get(h, &Value::Int(4), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(4)));
+        assert!(!contains(h, &Value::int(3i64), &mut tx, &Type::Int, &Type::Int));
+        assert_eq!(get(h, &Value::int(3i64), &mut tx, &Type::Int, &Type::Int), None);
+        assert_eq!(get(h, &Value::int(4i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(4i64)));
     }
 
     #[test]
@@ -855,8 +855,8 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let h = set(EMPTY, Value::Int(1), Value::Int(1), &mut tx, &Type::Int, &Type::Int).unwrap();
-        let (h2, found) = remove(h, &Value::Int(999), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let h = set(EMPTY, Value::int(1i64), Value::int(1i64), &mut tx, &Type::Int, &Type::Int).unwrap();
+        let (h2, found) = remove(h, &Value::int(999i64), &mut tx, &Type::Int, &Type::Int).unwrap();
         assert!(!found);
         assert_eq!(h2, h);
     }
@@ -874,7 +874,7 @@ mod tests {
         let mut tx = Tx::new(seed_kv);
         let mut h = starting;
         for (k, v) in entries {
-            h = set(h, Value::Int(*k), Value::Int(*v), &mut tx, &Type::Int, &Type::Int).unwrap();
+            h = set(h, Value::int(*k), Value::int(*v), &mut tx, &Type::Int, &Type::Int).unwrap();
         }
         let _ = host;
         let (_reads, writes) = tx.into_sets();
@@ -918,8 +918,8 @@ mod tests {
         let mut tx = Tx::new(kv_for_tx);
         for (k, expected) in &[(1, 10), (2, 20), (3, 30), (99, 9900), (101, 10100)] {
             assert_eq!(
-                get(merged.root, &Value::Int(*k), &mut tx, &Type::Int, &Type::Int),
-                Some(Value::Int(*expected)),
+                get(merged.root, &Value::int(*k), &mut tx, &Type::Int, &Type::Int),
+                Some(Value::int(*expected)),
                 "key {} missing from merged tree", k,
             );
         }
@@ -939,9 +939,9 @@ mod tests {
 
         let kv_for_tx: &dyn crate::kv::Kv = &kv;
         let mut tx = Tx::new(kv_for_tx);
-        assert_eq!(get(merged.root, &Value::Int(1), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(999)));
-        assert_eq!(get(merged.root, &Value::Int(2), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(20)));
-        assert_eq!(get(merged.root, &Value::Int(3), &mut tx, &Type::Int, &Type::Int), Some(Value::Int(30)));
+        assert_eq!(get(merged.root, &Value::int(1i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(999i64)));
+        assert_eq!(get(merged.root, &Value::int(2i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(20i64)));
+        assert_eq!(get(merged.root, &Value::int(3i64), &mut tx, &Type::Int, &Type::Int), Some(Value::int(30i64)));
     }
 
     #[test]
@@ -967,8 +967,8 @@ mod tests {
         let mut tx = Tx::new(kv_for_tx);
         for (k, expected) in &[(1, 10), (2, 20), (3, 30), (4, 40)] {
             assert_eq!(
-                get(merged.root, &Value::Int(*k), &mut tx, &Type::Int, &Type::Int),
-                Some(Value::Int(*expected)),
+                get(merged.root, &Value::int(*k), &mut tx, &Type::Int, &Type::Int),
+                Some(Value::int(*expected)),
             );
         }
     }
@@ -984,8 +984,8 @@ mod tests {
         let mut a = EMPTY;
         let mut b = EMPTY;
         for i in 0..20i64 {
-            a = set(a, Value::Int(i), Value::Int(i + 1000), &mut tx, &Type::Int, &Type::Int).unwrap();
-            b = set(b, Value::Int(i), Value::Int(i + 1000), &mut tx, &Type::Int, &Type::Int).unwrap();
+            a = set(a, Value::int(i), Value::int(i + 1000), &mut tx, &Type::Int, &Type::Int).unwrap();
+            b = set(b, Value::int(i), Value::int(i + 1000), &mut tx, &Type::Int, &Type::Int).unwrap();
         }
         assert_eq!(a, b, "equal-content pmaps should hash to the same root");
     }

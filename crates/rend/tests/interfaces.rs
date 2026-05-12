@@ -149,7 +149,7 @@ fn dyn_dispatch_runs_via_bytecode_vm() {
     let out = Engine::new()
         .execute_modules(&sources, "main", Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(42));
+    assert_eq!(out.result, Value::int(42i64));
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn dyn_dispatch_can_swap_implementations() {
         .execute_modules(&sources, "main", Fuel::new(50_000), &kv)
         .unwrap();
     // 1 + 2*10 = 21
-    assert_eq!(out.result, Value::Int(21));
+    assert_eq!(out.result, Value::int(21i64));
 }
 
 #[test]
@@ -431,7 +431,7 @@ fn bind_accepts_stricter_impl_than_iface_declares() {
     let out = Engine::new()
         .execute_modules(&sources, "main", Fuel::new(20_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(7));
+    assert_eq!(out.result, Value::int(7i64));
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn bind_accepts_any_impl_when_iface_has_no_effect_annotation() {
     let out = Engine::new()
         .execute_modules(&sources, "main", Fuel::new(20_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(1));
+    assert_eq!(out.result, Value::int(1i64));
 }
 
 // ---------- local-bound view-fn dispatch ----------
@@ -494,7 +494,7 @@ fn view_fn_can_call_view_method_through_local_interface() {
     let out = Engine::new()
         .execute_modules(&sources, "main", Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(42));
+    assert_eq!(out.result, Value::int(42i64));
 }
 
 #[test]

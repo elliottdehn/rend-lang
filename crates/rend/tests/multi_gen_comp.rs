@@ -15,7 +15,7 @@ fn list_comp_two_generators() {
         }
     ").unwrap();
     // 3 * 2 = 6
-    assert_eq!(v, Value::Int(6));
+    assert_eq!(v, Value::int(6i64));
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn list_comp_two_generators_sum() {
             return s;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(614));
+    assert_eq!(v, Value::int(614i64));
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn list_comp_two_for_with_filter() {
             return len(xs);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3)); // (1,6) (2,5) (3,4)
+    assert_eq!(v, Value::int(3i64)); // (1,6) (2,5) (3,4)
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn list_comp_filter_between_generators() {
             return len(xs);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(4)); // (2, 3) x (10, 20)
+    assert_eq!(v, Value::int(4i64)); // (2, 3) x (10, 20)
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn list_comp_multiple_filters() {
             return len(xs);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(6)); // a in {2,3,4}, b in {1,2}
+    assert_eq!(v, Value::int(6i64)); // a in {2,3,4}, b in {1,2}
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn set_comp_two_generators_dedupes() {
             return set_len(s);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn dict_comp_two_generators() {
             return dict_len(d);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(4));
+    assert_eq!(v, Value::int(4i64));
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn list_comp_three_generators() {
             return len(xs);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(8)); // 2*2*2
+    assert_eq!(v, Value::int(8i64)); // 2*2*2
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn list_comp_inner_uses_outer() {
             return s;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(132));
+    assert_eq!(v, Value::int(132i64));
 }
 
 #[test]
@@ -131,6 +131,6 @@ fn example_24_advanced_runs() {
     let res = Engine::new().execute(&src, Fuel::new(50_000), &kv);
     // For now, accept either success (slice 16 done) or specific compile error.
     if let Ok(out) = res {
-        assert_eq!(out.result, Value::Int(321));
+        assert_eq!(out.result, Value::int(321i64));
     }
 }

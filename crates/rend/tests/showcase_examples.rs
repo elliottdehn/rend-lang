@@ -168,7 +168,7 @@ fn dao_proposal_passes_with_majority_yes() {
         .execute_modules(&sources, "main", Fuel::new(100_000), &kv)
         .unwrap();
     // alice (10) + bob (5) yes vs carol (3) no → 15 vs 3 → passes.
-    assert_eq!(out.result, Value::Int(1));
+    assert_eq!(out.result, Value::int(1i64));
 }
 
 #[test]
@@ -265,7 +265,7 @@ fn dao_proposal_can_fail_when_majority_votes_no() {
     let out = Engine::new()
         .execute_modules(&sources, "main", Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
 
     // Executed event should report passed=false.
     let executed = out.events.iter().find(|e| e.name == "Executed").unwrap();

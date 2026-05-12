@@ -87,13 +87,13 @@ fn address_constructed_from_string_keys_a_map() {
         }
     "#;
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(42));
+    assert_eq!(out.result, Value::int(42i64));
 
     let key = child(
         state_root("main", "holders"),
         &serialize(&Value::Address("0xfeed".into())),
     );
-    assert_eq!(out.writes.get(&key), Some(&Value::Int(42)));
+    assert_eq!(out.writes.get(&key), Some(&Value::int(42i64)));
 }
 
 #[test]

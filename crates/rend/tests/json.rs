@@ -28,7 +28,7 @@ fn parse_array() {
             return json_to_i64(j -> [1]);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(20));
+    assert_eq!(v, Value::int(20i64));
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn json_to_i64_extracts_int() {
             return json_to_i64(j);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn extract_then_aggregate() {
             return total;       // 42
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 // ---------- typeck rejection ----------

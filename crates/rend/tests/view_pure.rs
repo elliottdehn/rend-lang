@@ -18,7 +18,7 @@ fn view_fn_reading_state_compiles() {
             return get();
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn view_fn_calling_another_view_fn_is_fine() {
             return read_outer();
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(11));
+    assert_eq!(v, Value::int(11i64));
 }
 
 // ---------- pure ----------
@@ -86,7 +86,7 @@ fn pure_fn_with_no_state_access_compiles() {
         entry pure fn add(a: i64, b: i64) -> i64 { return a + b; }
         fn main() -> i64 { return add(20, 22); }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn pure_fn_calling_pure_fn_is_fine() {
         entry pure fn quad(x: i64) -> i64 { return double(double(x)); }
         fn main() -> i64 { return quad(5); }
     ").unwrap();
-    assert_eq!(v, Value::Int(20));
+    assert_eq!(v, Value::int(20i64));
 }
 
 // ---------- syntax ----------
@@ -237,7 +237,7 @@ fn query_works_with_pure_main() {
     let r = Engine::new()
         .query(&tx, &[], Fuel::new(20_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(5));
+    assert_eq!(r.result, Value::int(5i64));
     assert!(r.reads.is_empty());
 }
 

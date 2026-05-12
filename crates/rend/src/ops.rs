@@ -6,6 +6,8 @@ use crate::ast::{BinOp, UnOp};
 use crate::error::{Error, ErrorKind};
 use crate::token::Span;
 use crate::value::Value;
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive, Zero};
 
 macro_rules! int_arith {
     ($op:expr, $a:expr, $b:expr, $variant:ident, $span:expr) => {{
@@ -52,6 +54,54 @@ macro_rules! int_arith {
     }};
 }
 
+/// Arbitrary-precision integer arithmetic for `Type::Int`. No
+/// overflow is possible at this layer (the values are unbounded);
+/// the only failure modes are division/modulo by zero and shifts by
+/// values that don't fit in `u32`. Comparisons and bitwise ops use
+/// `BigInt`'s built-in `Ord` / `BitAnd` / `BitOr` / `BitXor` impls.
+fn bigint_arith(op: BinOp, a: &BigInt, b: &BigInt, span: Span) -> Result<Value, Error> {
+    let div_zero = || Error::new(ErrorKind::Runtime, "division by zero", span);
+    let bad_shift = || Error::new(ErrorKind::Runtime, "shift amount out of range", span);
+    match op {
+        BinOp::Add => Ok(Value::Int(a + b)),
+        BinOp::Sub => Ok(Value::Int(a - b)),
+        BinOp::Mul => Ok(Value::Int(a * b)),
+        BinOp::Div => {
+            if b.is_zero() { Err(div_zero()) } else { Ok(Value::Int(a / b)) }
+        }
+        BinOp::Mod => {
+            if b.is_zero() { Err(div_zero()) } else { Ok(Value::Int(a % b)) }
+        }
+        BinOp::Lt    => Ok(Value::Bool(a < b)),
+        BinOp::Gt    => Ok(Value::Bool(a > b)),
+        BinOp::LtEq  => Ok(Value::Bool(a <= b)),
+        BinOp::GtEq  => Ok(Value::Bool(a >= b)),
+        BinOp::Eq    => Ok(Value::Bool(a == b)),
+        BinOp::NotEq => Ok(Value::Bool(a != b)),
+        BinOp::BitAnd => Ok(Value::Int(a & b)),
+        BinOp::BitOr  => Ok(Value::Int(a | b)),
+        BinOp::BitXor => Ok(Value::Int(a ^ b)),
+        BinOp::Shl => {
+            // BigInt's `<<` takes any usize-castable amount but
+            // negative shifts are meaningless. Reject them loudly
+            // so silent truncation never happens.
+            if b.is_negative() { return Err(bad_shift()); }
+            let n: u32 = b.to_u32().ok_or_else(bad_shift)?;
+            Ok(Value::Int(a << n))
+        }
+        BinOp::Shr => {
+            if b.is_negative() { return Err(bad_shift()); }
+            let n: u32 = b.to_u32().ok_or_else(bad_shift)?;
+            Ok(Value::Int(a >> n))
+        }
+        other => Err(Error::new(
+            ErrorKind::Runtime,
+            format!("operator {other:?} not defined for Int values"),
+            span,
+        )),
+    }
+}
+
 pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, Error> {
     use Value::*;
     let mismatch = || {
@@ -63,7 +113,7 @@ pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, E
     };
 
     match (&l, &r) {
-        (Int(a),  Int(b))  => int_arith!(op, a, b, Int,  span),
+        (Int(a),  Int(b))  => bigint_arith(op, a, b, span),
         (I32(a),  I32(b))  => int_arith!(op, a, b, I32,  span),
         (U32(a),  U32(b))  => int_arith!(op, a, b, U32,  span),
         (U64(a),  U64(b))  => int_arith!(op, a, b, U64,  span),
@@ -88,7 +138,7 @@ pub fn eval_binary(op: BinOp, l: Value, r: Value, span: Span) -> Result<Value, E
 pub fn eval_unary(op: UnOp, v: Value, span: Span) -> Result<Value, Error> {
     let overflow = || Error::new(ErrorKind::Runtime, "integer overflow", span);
     match (op, v) {
-        (UnOp::Neg, Value::Int(n)) => n.checked_neg().map(Value::Int).ok_or_else(overflow),
+        (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
         (UnOp::Neg, Value::I32(n)) => n.checked_neg().map(Value::I32).ok_or_else(overflow),
         (UnOp::Neg, Value::U32(0)) => Ok(Value::U32(0)),
         (UnOp::Neg, Value::U32(_)) => Err(overflow()),
@@ -131,7 +181,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             _ => Err(bad("set_contains(set, elem)".into())),
         },
         "set_len" => match args {
-            [Value::Set(s)] => Ok(Value::Int(s.len() as i64)),
+            [Value::Set(s)] => Ok(Value::int(s.len())),
             _ => Err(bad("set_len(set)".into())),
         },
         "dict_set" => match args {
@@ -165,7 +215,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             _ => Err(bad("dict_has(dict, key)".into())),
         },
         "dict_len" => match args {
-            [Value::Dict(d)] => Ok(Value::Int(d.len() as i64)),
+            [Value::Dict(d)] => Ok(Value::int(d.len())),
             _ => Err(bad("dict_len(dict)".into())),
         },
         "to_bytes" => match args {
@@ -186,9 +236,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             // reject UTF-8 splits with a runtime error.
             [Value::Str(s), Value::Int(start), Value::Int(end)] => {
                 let s_bytes = s.as_bytes();
-                let st = *start as usize;
-                let en = *end as usize;
-                if *start < 0 || *end < 0 || st > en || en > s_bytes.len() {
+                let st = start.to_usize().ok_or_else(|| {
+                    bad(format!("string_slice: start out of range: {start}"))
+                })?;
+                let en = end.to_usize().ok_or_else(|| {
+                    bad(format!("string_slice: end out of range: {end}"))
+                })?;
+                if st > en || en > s_bytes.len() {
                     return Err(bad(format!(
                         "string_slice: out-of-range [{start}..{end}] over len {}",
                         s_bytes.len(),
@@ -208,7 +262,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             _ => Err(bad("string_contains(haystack, needle)".into())),
         },
         "bytes_len" => match args {
-            [Value::Bytes(b)] => Ok(Value::Int(b.len() as i64)),
+            [Value::Bytes(b)] => Ok(Value::int(b.len())),
             _ => Err(bad("bytes_len(bytes)".into())),
         },
         "bytes_concat" => match args {
@@ -225,9 +279,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
         },
         "bytes_slice" => match args {
             [Value::Bytes(b), Value::Int(start), Value::Int(end)] => {
-                let s = *start as usize;
-                let e = *end as usize;
-                if *start < 0 || *end < 0 || s > e || e > b.len() {
+                let s = start.to_usize().ok_or_else(|| {
+                    bad(format!("bytes_slice: start out of range: {start}"))
+                })?;
+                let e = end.to_usize().ok_or_else(|| {
+                    bad(format!("bytes_slice: end out of range: {end}"))
+                })?;
+                if s > e || e > b.len() {
                     return Err(bad(format!(
                         "bytes_slice: out-of-range [{start}..{end}] over len {}",
                         b.len(),
@@ -235,7 +293,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
                 }
                 Ok(Value::Bytes(b[s..e].to_vec()))
             }
-            _ => Err(bad("bytes_slice(bytes, start: i64, end: i64)".into())),
+            _ => Err(bad("bytes_slice(bytes, start: int, end: int)".into())),
         },
         "assert" => match args {
             [Value::Bool(true)] => Ok(Value::Unit),
@@ -302,13 +360,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             _ => Err(bad("json_get_field(json, string)".into())),
         },
         "json_get_index" => match args {
-            [Value::Json(j), Value::Int(i)] if *i >= 0 => {
-                Ok(Value::Json(j.get_index(*i as usize).cloned().unwrap_or(crate::json::Json::Null)))
-            }
+            [Value::Json(j), Value::Int(i)] => match i.to_usize() {
+                Some(idx) => Ok(Value::Json(
+                    j.get_index(idx).cloned().unwrap_or(crate::json::Json::Null))),
+                None => Err(bad(format!("json_get_index: out of range: {i}"))),
+            },
             [Value::Json(j), Value::U64(i)] => {
                 Ok(Value::Json(j.get_index(*i as usize).cloned().unwrap_or(crate::json::Json::Null)))
             }
-            _ => Err(bad("json_get_index(json, i64|u64)".into())),
+            _ => Err(bad("json_get_index(json, int|u64)".into())),
         },
         "json_to_string" => match args {
             [Value::Json(crate::json::Json::Str(s))] => Ok(Value::Str(s.clone())),
@@ -318,15 +378,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, Error> {
             _ => Err(bad("json_to_string(json)".into())),
         },
         "json_to_i64" => match args {
-            [Value::Json(crate::json::Json::Int(n))] => {
-                use num_traits::ToPrimitive;
-                match n.to_i64() {
-                    Some(v) => Ok(Value::Int(v)),
-                    None => Err(bad(format!(
-                        "json_to_i64: integer out of i64 range: {n}",
-                    ))),
-                }
-            }
+            // `json_to_i64` now returns a regular `int` (BigInt) — the
+            // i64 name is historical, kept for source-compat. The
+            // returned Value::Int carries the full BigInt; there is no
+            // truncation. Sized-i64 conversion happens at the typed
+            // builtin boundary if needed.
+            [Value::Json(crate::json::Json::Int(n))] => Ok(Value::int(n.clone())),
             [Value::Json(other)] => Err(bad(format!(
                 "json_to_i64: value is not an integer: {other}",
             ))),
@@ -393,7 +450,8 @@ pub fn convert(value: &Value, target: u8, span: Span) -> Result<Value, Error> {
 
     fn from_i128(target: u8, n: i128, bounds: impl Fn() -> Error) -> Result<Value, Error> {
         match target {
-            0 => i64::try_from(n).map(Value::Int).map_err(|_| bounds()),
+            // target 0 → `int` (BigInt): widen from i128 — always succeeds.
+            0 => Ok(Value::int(n)),
             1 => i32::try_from(n).map(Value::I32).map_err(|_| bounds()),
             2 => u32::try_from(n).map(Value::U32).map_err(|_| bounds()),
             3 => u64::try_from(n).map(Value::U64).map_err(|_| bounds()),
@@ -405,13 +463,25 @@ pub fn convert(value: &Value, target: u8, span: Span) -> Result<Value, Error> {
         }
     }
 
+    // Convert through BigInt for the source value to keep `int` first-class.
+    // For sized variants we widen to i128 (safe except for u128 > i128::MAX,
+    // handled separately).
+    if let Value::Int(n) = value {
+        // BigInt → target. For target 0 (int), return the BigInt directly.
+        if target == 0 { return Ok(Value::Int(n.clone())); }
+        return match target {
+            1 => n.to_i32().map(Value::I32).ok_or_else(bounds),
+            2 => n.to_u32().map(Value::U32).ok_or_else(bounds),
+            3 => n.to_u64().map(Value::U64).ok_or_else(bounds),
+            4 => n.to_u128().map(Value::U128).ok_or_else(bounds),
+            _ => Err(bounds()),
+        };
+    }
     let n: i128 = match value {
-        Value::Int(n) => *n as i128,
         Value::I32(n) => *n as i128,
         Value::U32(n) => *n as i128,
         Value::U64(n) => *n as i128,
         Value::U128(n) => {
-            // u128 may not fit in i128; handle separately
             if target == 4 { return Ok(Value::U128(*n)); }
             if *n > i128::MAX as u128 { return Err(bounds()); }
             *n as i128

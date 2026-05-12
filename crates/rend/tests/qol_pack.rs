@@ -14,7 +14,7 @@ fn for_in_exclusive_range() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0 + 1 + 2 + 3 + 4));
+    assert_eq!(v, Value::int(0i64 + 1 + 2 + 3 + 4));
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn for_in_inclusive_range() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(55));
+    assert_eq!(v, Value::int(55i64));
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn empty_range_runs_zero_iterations() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn range_with_runtime_bounds() {
             return count(2, 7);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn range_break_continue_works() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(4)); // 0, 1, 3, 4
+    assert_eq!(v, Value::int(4i64)); // 0, 1, 3, 4
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn nested_range_loops() {
             return total;     // sum 0..9
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(36));
+    assert_eq!(v, Value::int(36i64));
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn bitwise_and_or_xor() {
         }
     ").unwrap();
     // 12 = 0b1100, 10 = 0b1010 → and=8, or=14, xor=6
-    assert_eq!(v, Value::Int(8 * 100 + 14 * 10 + 6));
+    assert_eq!(v, Value::int(8i64 * 100 + 14 * 10 + 6));
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn left_shift_right_shift() {
             return (1 << 10) + (256 >> 2);     // 1024 + 64
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1088));
+    assert_eq!(v, Value::int(1088i64));
 }
 
 #[test]
@@ -150,14 +150,17 @@ fn precedence_arithmetic_above_bitwise() {
             return 1 + 6 & 5;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
-fn shift_overflow_is_runtime_error() {
+fn sized_shift_overflow_is_runtime_error() {
+    // `int` is arbitrary-precision; `1 << 100` is just 2^100, a
+    // perfectly valid Int. Shift overflow is only meaningful for
+    // sized types — check u64 here.
     let err = run("
-        fn main() -> i64 {
-            let bad = 1 << 100;
+        fn main() -> u64 {
+            let bad = 1u64 << 100u64;
             return bad;
         }
     ").unwrap_err();
@@ -197,7 +200,7 @@ fn const_with_string_value() {
             return len(GREETING);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
@@ -243,7 +246,7 @@ fn local_shadows_const() {
             return X;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(7));
+    assert_eq!(v, Value::int(7i64));
 }
 
 // ---------- string ops ----------
@@ -256,7 +259,7 @@ fn string_concat_basic() {
             return len(s);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(9));
+    assert_eq!(v, Value::int(9i64));
 }
 
 #[test]
@@ -336,5 +339,5 @@ fn string_concat_chain_via_pipe() {
                 |> len($$);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(11));
+    assert_eq!(v, Value::int(11i64));
 }

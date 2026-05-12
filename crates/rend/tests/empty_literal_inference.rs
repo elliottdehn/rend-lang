@@ -11,7 +11,7 @@ fn empty_array_with_annotation() {
             return len(xs);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn empty_array_then_append_via_loop() {
             return len(comp);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn empty_set_with_annotation() {
             return set_len(s);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn empty_set_then_insert() {
             return set_len(s2);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1));
+    assert_eq!(v, Value::int(1i64));
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn empty_dict_with_annotation() {
             return dict_len(d);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn empty_dict_then_set() {
             return dict_get(d2, 5, 0);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(100));
+    assert_eq!(v, Value::int(100i64));
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn annotation_on_non_empty_array_works() {
             return len(xs);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]

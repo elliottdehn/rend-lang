@@ -24,8 +24,8 @@ fn unset_map_cell_reads_as_default() {
         fn main() -> i64 { return balances[42]; }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
-    assert_eq!(out.reads.get(&cell("balances", &Value::Int(42))), Some(&Value::Int(0)));
+    assert_eq!(out.result, Value::int(0i64));
+    assert_eq!(out.reads.get(&cell("balances", &Value::int(42i64))), Some(&Value::int(0i64)));
 }
 
 #[test]
@@ -39,8 +39,8 @@ fn assign_then_read_a_map_cell() {
         }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(99));
-    assert_eq!(out.writes.get(&cell("balances", &Value::Int(7))), Some(&Value::Int(99)));
+    assert_eq!(out.result, Value::int(99i64));
+    assert_eq!(out.writes.get(&cell("balances", &Value::int(7i64))), Some(&Value::int(99i64)));
 }
 
 #[test]
@@ -62,8 +62,8 @@ fn transfer_produces_two_cell_rw_set() {
     ";
     let out = engine().execute(src, Fuel::new(10_000), &kv).unwrap();
     assert_eq!(out.result, Value::Bool(true));
-    assert_eq!(out.writes.get(&cell("balances", &Value::Int(1))), Some(&Value::Int(70)));
-    assert_eq!(out.writes.get(&cell("balances", &Value::Int(2))), Some(&Value::Int(30)));
+    assert_eq!(out.writes.get(&cell("balances", &Value::int(1i64))), Some(&Value::int(70i64)));
+    assert_eq!(out.writes.get(&cell("balances", &Value::int(2i64))), Some(&Value::int(30i64)));
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn map_persistence_across_runs() {
     ";
     for expected in [10, 20, 30] {
         let out = engine().execute(src, Fuel::new(10_000), &kv).unwrap();
-        assert_eq!(out.result, Value::Int(expected));
+        assert_eq!(out.result, Value::int(expected));
         kv.apply(&out.writes);
     }
 }
@@ -121,10 +121,10 @@ fn string_keyed_map_works() {
         }
     "#;
     let out = engine().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(3));
+    assert_eq!(out.result, Value::int(3i64));
     assert_eq!(
         out.writes.get(&cell("names", &Value::Str("alice".into()))),
-        Some(&Value::Int(1))
+        Some(&Value::int(1i64))
     );
 }
 
@@ -139,8 +139,8 @@ fn address_keyed_map_works() {
         }
     "#;
     let out = engine().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(100));
+    assert_eq!(out.result, Value::int(100i64));
     let key = cell("holders", &Value::Address("0xfeed".into()));
-    assert_eq!(out.writes.get(&key), Some(&Value::Int(100)));
+    assert_eq!(out.writes.get(&key), Some(&Value::int(100i64)));
     let _ = Type::Address;
 }

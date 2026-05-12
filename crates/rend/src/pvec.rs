@@ -557,14 +557,14 @@ mod tests {
         let mut root = EMPTY;
         let mut len = 0u64;
         for i in 0..10i64 {
-            let (r, l) = push(root, len, Value::Int(i * 10), &mut tx, &Type::Int).unwrap();
+            let (r, l) = push(root, len, Value::int(i * 10), &mut tx, &Type::Int).unwrap();
             root = r;
             len = l;
         }
         assert_eq!(len, 10);
         for i in 0..10u64 {
             let v = get(root, len, i, &mut tx, &Type::Int, Span::default()).unwrap();
-            assert_eq!(v, Value::Int(i as i64 * 10));
+            assert_eq!(v, Value::int(i as i64 * 10));
         }
     }
 
@@ -576,14 +576,14 @@ mod tests {
         let mut root = EMPTY;
         let mut len = 0u64;
         for i in 0..100i64 {
-            let (r, l) = push(root, len, Value::Int(i), &mut tx, &Type::Int).unwrap();
+            let (r, l) = push(root, len, Value::int(i), &mut tx, &Type::Int).unwrap();
             root = r;
             len = l;
         }
         assert_eq!(len, 100);
         for i in 0..100u64 {
             let v = get(root, len, i, &mut tx, &Type::Int, Span::default()).unwrap();
-            assert_eq!(v, Value::Int(i as i64));
+            assert_eq!(v, Value::int(i as i64));
         }
     }
 
@@ -596,7 +596,7 @@ mod tests {
         let mut len = 0u64;
         // 1500 entries forces depth 2 (32^2 = 1024 < 1500 <= 32^3).
         for i in 0..1500i64 {
-            let (r, l) = push(root, len, Value::Int(i), &mut tx, &Type::Int).unwrap();
+            let (r, l) = push(root, len, Value::int(i), &mut tx, &Type::Int).unwrap();
             root = r;
             len = l;
         }
@@ -604,7 +604,7 @@ mod tests {
         // Spot-check: first, mid, last.
         for i in &[0u64, 500, 1023, 1024, 1499] {
             let v = get(root, len, *i, &mut tx, &Type::Int, Span::default()).unwrap();
-            assert_eq!(v, Value::Int(*i as i64));
+            assert_eq!(v, Value::int(*i as i64));
         }
     }
 
@@ -616,14 +616,14 @@ mod tests {
         let mut root = EMPTY;
         let mut len = 0u64;
         for i in 0..50i64 {
-            let (r, l) = push(root, len, Value::Int(i), &mut tx, &Type::Int).unwrap();
+            let (r, l) = push(root, len, Value::int(i), &mut tx, &Type::Int).unwrap();
             root = r;
             len = l;
         }
-        let new_root = set(root, len, 25, Value::Int(9999), &mut tx, &Type::Int, Span::default()).unwrap();
-        assert_eq!(get(new_root, len, 25, &mut tx, &Type::Int, Span::default()).unwrap(), Value::Int(9999));
-        assert_eq!(get(new_root, len, 24, &mut tx, &Type::Int, Span::default()).unwrap(), Value::Int(24));
-        assert_eq!(get(new_root, len, 26, &mut tx, &Type::Int, Span::default()).unwrap(), Value::Int(26));
+        let new_root = set(root, len, 25, Value::int(9999i64), &mut tx, &Type::Int, Span::default()).unwrap();
+        assert_eq!(get(new_root, len, 25, &mut tx, &Type::Int, Span::default()).unwrap(), Value::int(9999i64));
+        assert_eq!(get(new_root, len, 24, &mut tx, &Type::Int, Span::default()).unwrap(), Value::int(24i64));
+        assert_eq!(get(new_root, len, 26, &mut tx, &Type::Int, Span::default()).unwrap(), Value::int(26i64));
     }
 
     #[test]
@@ -631,7 +631,7 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let (root, len) = push(EMPTY, 0, Value::Int(7), &mut tx, &Type::Int).unwrap();
+        let (root, len) = push(EMPTY, 0, Value::int(7i64), &mut tx, &Type::Int).unwrap();
         let err = get(root, len, 5, &mut tx, &Type::Int, Span::default()).unwrap_err();
         assert!(err.to_string().contains("out of bounds"));
     }
@@ -641,8 +641,8 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let (root, len) = push(EMPTY, 0, Value::Int(7), &mut tx, &Type::Int).unwrap();
-        let err = set(root, len, 5, Value::Int(0), &mut tx, &Type::Int, Span::default()).unwrap_err();
+        let (root, len) = push(EMPTY, 0, Value::int(7i64), &mut tx, &Type::Int).unwrap();
+        let err = set(root, len, 5, Value::int(0i64), &mut tx, &Type::Int, Span::default()).unwrap_err();
         assert!(err.to_string().contains("out of bounds"));
     }
 
@@ -651,13 +651,13 @@ mod tests {
         let host = Host::new();
         let kv = EmptyKv;
         let mut tx = fresh_tx(&host, &kv);
-        let (r1, l1) = push(EMPTY, 0, Value::Int(10), &mut tx, &Type::Int).unwrap();
-        let (r2, l2) = push(r1, l1, Value::Int(20), &mut tx, &Type::Int).unwrap();
+        let (r1, l1) = push(EMPTY, 0, Value::int(10i64), &mut tx, &Type::Int).unwrap();
+        let (r2, l2) = push(r1, l1, Value::int(20i64), &mut tx, &Type::Int).unwrap();
         // r1 still observes only its own state.
-        assert_eq!(get(r1, l1, 0, &mut tx, &Type::Int, Span::default()).unwrap(), Value::Int(10));
+        assert_eq!(get(r1, l1, 0, &mut tx, &Type::Int, Span::default()).unwrap(), Value::int(10i64));
         let oob = get(r1, l1, 1, &mut tx, &Type::Int, Span::default());
         assert!(oob.is_err(), "r1 should not see r2's appended element");
-        assert_eq!(get(r2, l2, 0, &mut tx, &Type::Int, Span::default()).unwrap(), Value::Int(10));
-        assert_eq!(get(r2, l2, 1, &mut tx, &Type::Int, Span::default()).unwrap(), Value::Int(20));
+        assert_eq!(get(r2, l2, 0, &mut tx, &Type::Int, Span::default()).unwrap(), Value::int(10i64));
+        assert_eq!(get(r2, l2, 1, &mut tx, &Type::Int, Span::default()).unwrap(), Value::int(20i64));
     }
 }

@@ -18,7 +18,7 @@ fn unit_variant_constructs_and_matches() {
             };
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1));
+    assert_eq!(v, Value::int(1i64));
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn tuple_variant_carries_payload() {
             };
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn wildcard_arm_matches_uncovered_variants() {
             };
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(99));
+    assert_eq!(v, Value::int(99i64));
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn enum_round_trips_through_state() {
         }
     ";
     let out = Engine::new().execute(read, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(1));
+    assert_eq!(out.result, Value::int(1i64));
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn enum_default_is_first_variant() {
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
     // Unwritten enum state defaults to the first variant.
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn enum_in_struct_field() {
             };
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn match_inside_function_returns_value_to_caller() {
             return a + b + c;     // 15 + 5 + (-7) = 13
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(13));
+    assert_eq!(v, Value::int(13i64));
 }
 
 #[test]
@@ -347,5 +347,5 @@ fn map_keyed_by_enum_variant_value() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(6));
+    assert_eq!(out.result, Value::int(6i64));
 }

@@ -91,7 +91,7 @@ fn gc_collects_orphaned_pmap_path_after_overwrite() {
     ";
     let out = Engine::new().execute(read_back, Fuel::new(200_000), &kv).unwrap();
     // 0+1+...+29 = 435, but s[7] was overwritten to 999 (delta = 999 - 7 = 992).
-    assert_eq!(out.result, Value::Int(435 + 992));
+    assert_eq!(out.result, Value::int(435 + 992i64));
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn gc_collects_orphaned_pvec_path_after_set() {
     ";
     let out = Engine::new().execute(read_back, Fuel::new(200_000), &kv).unwrap();
     // v[0] = 0, v[20] = 9999 (overwritten), v[49] = 490
-    assert_eq!(out.result, Value::Int(0 + 9999 + 490));
+    assert_eq!(out.result, Value::int(0 + 9999 + 490i64));
 }
 
 // ---------- cross-state sharing ----------
@@ -281,7 +281,7 @@ fn gc_preserves_cells_referenced_by_another_state() {
         fn main() -> i64 { return a[3] + a[5]; }
     ";
     let out = Engine::new().execute(read_a, Fuel::new(200_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(999 + 5));
+    assert_eq!(out.result, Value::int(999 + 5i64));
 }
 
 #[test]

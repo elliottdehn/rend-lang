@@ -8,7 +8,7 @@ use rend::{run, Engine, Fuel};
 
 #[test]
 fn suffixed_literals_have_their_type() {
-    assert_eq!(run("fn main() -> i64  { return 42; }").unwrap(), Value::Int(42));
+    assert_eq!(run("fn main() -> i64  { return 42; }").unwrap(), Value::int(42i64));
     assert_eq!(run("fn main() -> i32  { return 42i32; }").unwrap(), Value::I32(42));
     assert_eq!(run("fn main() -> u32  { return 42u32; }").unwrap(), Value::U32(42));
     assert_eq!(run("fn main() -> u64  { return 42u64; }").unwrap(), Value::U64(42));
@@ -62,7 +62,7 @@ fn conversions_are_bounds_checked() {
 fn round_trip_to_i64() {
     assert_eq!(
         run("fn main() -> i64 { return i64(42u128); }").unwrap(),
-        Value::Int(42),
+        Value::int(42i64),
     );
 }
 

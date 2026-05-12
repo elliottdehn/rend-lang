@@ -141,7 +141,7 @@ fn redundant_writes_to_same_cell_dedupe_to_one_entry() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(99));
+    assert_eq!(out.result, Value::int(99i64));
     assert_eq!(out.writes.len(), 1, "should coalesce into one cell");
     kv.apply_writes(&out.writes);
     assert_eq!(kv.put_keys_touched.load(Ordering::Relaxed), 1);
@@ -192,7 +192,7 @@ fn default_put_many_falls_back_to_put_loop() {
         // No put_many override — uses the default loop.
     }
     let mut kv = PutOnlyKv { data: HashMap::new(), puts: AtomicUsize::new(0) };
-    let writes: HashMap<u128, Value> = (0..7).map(|i| (i as u128, Value::Int(i as i64))).collect();
+    let writes: HashMap<u128, Value> = (0..7).map(|i| (i as u128, Value::int(i as i64))).collect();
     kv.apply_writes(&writes);
     assert_eq!(kv.puts.load(Ordering::Relaxed), 7);
     assert_eq!(kv.data.len(), 7);

@@ -86,7 +86,7 @@ fn five_independent_reads_collapse_to_one_round_trip() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
     assert_eq!(kv.gets.load(Ordering::Relaxed),      0, "no individual gets");
     assert_eq!(kv.get_manys.load(Ordering::Relaxed), 1, "exactly one batch");
     assert_eq!(kv.keys_touched.load(Ordering::Relaxed), 5);
@@ -120,7 +120,7 @@ fn batched_reads_save_real_wall_time() {
     let started = std::time::Instant::now();
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
     let elapsed = started.elapsed();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
     // Batched: one ~10ms sleep. Generous upper bound to ride out CI
     // jitter; without the optimizer we'd see ~50ms.
     assert!(
@@ -402,7 +402,7 @@ fn batched_reads_dont_change_observable_value() {
         }
     ";
     let out = Engine::new().execute(read_back, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(60));
+    assert_eq!(out.result, Value::int(60i64));
 }
 
 // ---------- loop-level prefetching ----------
@@ -437,7 +437,7 @@ fn for_loop_with_direct_map_read_prefetches() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &lat).unwrap();
-    assert_eq!(out.result, Value::Int(150));
+    assert_eq!(out.result, Value::int(150i64));
     // Prefetch issues one batched round-trip for all five cells; the
     // per-iteration MapGets serve from the tx read-cache (no `get`s).
     assert_eq!(lat.get_manys.load(Ordering::Relaxed), 1);
@@ -469,7 +469,7 @@ fn comprehension_with_direct_map_read_prefetches() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &lat).unwrap();
-    assert_eq!(out.result, Value::Int(600));
+    assert_eq!(out.result, Value::int(600i64));
     assert_eq!(lat.get_manys.load(Ordering::Relaxed), 1);
     assert_eq!(lat.gets.load(Ordering::Relaxed),      0);
 }
@@ -503,7 +503,7 @@ fn comprehension_with_readonly_function_prefetches() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &lat).unwrap();
-    assert_eq!(out.result, Value::Int(2400));
+    assert_eq!(out.result, Value::int(2400i64));
     // One batched prefetch covers all three cells.
     assert_eq!(lat.get_manys.load(Ordering::Relaxed), 1);
     assert_eq!(lat.gets.load(Ordering::Relaxed),      0);
@@ -537,7 +537,7 @@ fn loop_prefetch_saves_real_wall_time_with_latency() {
     let started = std::time::Instant::now();
     let out = Engine::new().execute(src, Fuel::new(10_000), &lat).unwrap();
     let elapsed = started.elapsed();
-    assert_eq!(out.result, Value::Int(15));
+    assert_eq!(out.result, Value::int(15i64));
     // One ~10ms batch instead of five ~10ms sequential reads.
     assert!(
         elapsed < Duration::from_millis(35),

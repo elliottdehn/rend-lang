@@ -19,7 +19,7 @@ fn pvec_push_and_get() {
             return log[0] + log[1] + log[2];
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(60));
+    assert_eq!(v, Value::int(60i64));
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn pvec_set_overwrites_existing_index() {
             return log[0] + log[1] + log[2];
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1003));
+    assert_eq!(v, Value::int(1003i64));
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn pvec_grows_past_one_leaf() {
             return log[0] + log[50] + log[99];
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0 + 50 + 99));
+    assert_eq!(v, Value::int(0i64 + 50 + 99));
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn pvec_persists_across_transactions() {
         }
     ";
     let out = Engine::new().execute(src2, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(600));
+    assert_eq!(out.result, Value::int(600i64));
 }
 
 // ---------- type-system enforcement ----------
@@ -249,7 +249,7 @@ fn parallel_disjoint_pvec_set_merges() {
     ";
     let out = engine.execute(read_back, Fuel::new(50_000), &kv).unwrap();
     // 100 + 0 + 300 = 400
-    assert_eq!(out.result, Value::Int(400));
+    assert_eq!(out.result, Value::int(400i64));
 }
 
 #[test]

@@ -106,7 +106,7 @@ fn fuel_exhaustion_returns_out_of_fuel() {
 fn small_program_finishes_within_modest_fuel() {
     let src = "fn main() -> i64 { return 1 + 2 + 3 + 4 + 5; }";
     let v = run_bc(src, Fuel::new(100)).unwrap();
-    assert_eq!(v, Value::Int(15));
+    assert_eq!(v, Value::int(15i64));
 }
 
 #[test]

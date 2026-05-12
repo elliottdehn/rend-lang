@@ -22,7 +22,7 @@ fn assert_errors(src: &str, contains: &str) {
 #[test]
 fn resource_round_trip_unwraps_to_inner_int() {
     let src = "fn main() -> i64 { return unwrap(resource(42)); }";
-    assert_runs_to(src, Value::Int(42));
+    assert_runs_to(src, Value::int(42i64));
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn moved_resource_consumed_once_works() {
                    let r = resource(7);
                    return use_it(r);
                }";
-    assert_runs_to(src, Value::Int(7));
+    assert_runs_to(src, Value::int(7i64));
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn move_through_let_alias_still_consumes() {
         let r2 = r;
         return unwrap(r2);
     }";
-    assert_runs_to(src, Value::Int(3));
+    assert_runs_to(src, Value::int(3i64));
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn copy_types_can_be_used_freely() {
         let y = x + x;       // x used twice — Copy, no move
         return y;
     }";
-    assert_runs_to(src, Value::Int(10));
+    assert_runs_to(src, Value::int(10i64));
 }
 
 #[test]
@@ -96,5 +96,5 @@ fn no_use_after_move_when_neither_branch_moves() {
         if true {} else {}
         return unwrap(r);
     }";
-    assert_runs_to(src, Value::Int(9));
+    assert_runs_to(src, Value::int(9i64));
 }

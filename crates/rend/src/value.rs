@@ -1,10 +1,15 @@
 //! Runtime values produced by the interpreter.
 
 use crate::ast::Type;
+use num_bigint::BigInt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    Int(i64),
+    /// Arbitrary-precision signed integer. The default integer type
+    /// in rend; no overflow at the language level, no fixed width.
+    /// Sized variants (`I32`, `U32`, `U64`, `U128`) carry hardware
+    /// integers for places where range and bit-width matter.
+    Int(BigInt),
     I32(i32),
     U32(u32),
     U64(u64),
@@ -99,13 +104,28 @@ pub struct PMapCursor {
 }
 
 impl Value {
+    /// Construct `Value::Int` from any integer kind that converts
+    /// into a `BigInt`. Lets calls like `Value::int(42)` work
+    /// without writing `BigInt::from(...)` at every site, and keeps
+    /// the variant's storage type a private detail callers don't
+    /// need to spell out.
+    pub fn int(n: impl Into<BigInt>) -> Self {
+        Value::Int(n.into())
+    }
+
+    /// Extract a borrowed `BigInt` if this is an `Int`. Returns
+    /// `None` for any other variant.
+    pub fn as_int(&self) -> Option<&BigInt> {
+        match self { Value::Int(n) => Some(n), _ => None }
+    }
+
     /// Default value for a given type — used when reading a state cell that
     /// was never written, and as the seed when constructing fresh structs.
     /// For `Type::Map`, returns the value-type's default (the map itself
     /// has no aggregate Value form; reads operate per-cell).
     pub fn default_for(ty: &Type) -> Value {
         match ty {
-            Type::Int => Value::Int(0),
+            Type::Int => Value::int(0),
             Type::I32 => Value::I32(0),
             Type::U32 => Value::U32(0),
             Type::U64 => Value::U64(0),

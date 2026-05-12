@@ -11,13 +11,13 @@ use rend::{run, Engine, Fuel};
 #[test]
 fn sum_over_array_literal() {
     let v = run("fn main() -> i64 { return sum([1, 2, 3, 4, 5], 0); }").unwrap();
-    assert_eq!(v, Value::Int(15));
+    assert_eq!(v, Value::int(15i64));
 }
 
 #[test]
 fn sum_with_nonzero_init() {
     let v = run("fn main() -> i64 { return sum([10, 20, 30], 100); }").unwrap();
-    assert_eq!(v, Value::Int(160));
+    assert_eq!(v, Value::int(160i64));
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn sum_over_empty_returns_init() {
         let xs: [i64] = [];
         return sum(xs, 42);
     }").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn sum_over_pvec_to_array() {
             return sum(pvec_to_array(log), 0);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(55));
+    assert_eq!(v, Value::int(55i64));
 }
 
 // ---------- max ----------
@@ -106,7 +106,7 @@ fn sum_over_pvec_to_array() {
 #[test]
 fn max_over_array() {
     let v = run("fn main() -> i64 { return max([3, 7, 1, 9, 4], -1); }").unwrap();
-    assert_eq!(v, Value::Int(9));
+    assert_eq!(v, Value::int(9i64));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn max_over_empty_returns_default() {
         let xs: [i64] = [];
         return max(xs, -999);
     }").unwrap();
-    assert_eq!(v, Value::Int(-999));
+    assert_eq!(v, Value::int(-999i64));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn max_default_does_not_compete_with_elements() {
     // The default is only returned for empty. For non-empty, the
     // first element starts the fold — even if default is bigger.
     let v = run("fn main() -> i64 { return max([3, 5, 1], 100); }").unwrap();
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn max_over_pmap_values() {
 #[test]
 fn max_with_negative_default_works() {
     let v = run("fn main() -> i64 { return max([-5, -10, -3], 0); }").unwrap();
-    assert_eq!(v, Value::Int(-3));
+    assert_eq!(v, Value::int(-3i64));
 }
 
 // ---------- min ----------
@@ -151,7 +151,7 @@ fn max_with_negative_default_works() {
 #[test]
 fn min_over_array() {
     let v = run("fn main() -> i64 { return min([3, 7, 1, 9, 4], 100); }").unwrap();
-    assert_eq!(v, Value::Int(1));
+    assert_eq!(v, Value::int(1i64));
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn aggregations_callable_in_pure_fn() {
         }
         fn main() -> i64 { return double_total([1, 2, 3, 4]); }
     ").unwrap();
-    assert_eq!(v, Value::Int(20));
+    assert_eq!(v, Value::int(20i64));
 }
 
 // ---------- bytecode VM parity ----------

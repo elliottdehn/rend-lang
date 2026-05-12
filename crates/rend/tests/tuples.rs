@@ -15,7 +15,7 @@ fn tuple_literal_returned_from_fn() {
             return p.0 + p.1;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn tuple_destructuring_let_binds_each_element() {
             return a + b;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(30));
+    assert_eq!(v, Value::int(30i64));
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn three_arity_tuple_destructure() {
             return -1;
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(7));
+    assert_eq!(v, Value::int(7i64));
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn nested_tuple() {
             return p.0.0 + p.0.1 + p.1.0 + p.1.1;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(10));
+    assert_eq!(v, Value::int(10i64));
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn tuple_in_param_position() {
             return sum_pair((100, 200));
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(300));
+    assert_eq!(v, Value::int(300i64));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn destructured_locals_are_independent_after_binding() {
             return a + b;      // 11 + 20 = 31
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(31));
+    assert_eq!(v, Value::int(31i64));
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn tuple_paren_expr_disambiguation() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -173,5 +173,5 @@ fn tuple_with_lazy_state_reads_destructures_correctly() {
     let out = rend::Engine::new()
         .execute(src, rend::Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(300));
+    assert_eq!(out.result, Value::int(300i64));
 }

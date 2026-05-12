@@ -44,7 +44,7 @@ fn list_comp_projects_pmap_entries() {
             return total;          // 2 + 3 + 4
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(9));
+    assert_eq!(v, Value::int(9i64));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn list_comp_over_pvec_to_array() {
             return total;          // 2 + 4 + 6 + 8 + 10
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(30));
+    assert_eq!(v, Value::int(30i64));
 }
 
 // ---------- set comprehensions ----------
@@ -80,7 +80,7 @@ fn set_comp_dedups_over_pmap_values() {
             return set_len(unique); // {7, 13, 21}
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 // ---------- dict comprehensions ----------
@@ -99,7 +99,7 @@ fn dict_comp_inverts_pmap() {
             return dict_get(inverted, 200u64, 0);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 // ---------- multi-generator: cross-collection joins ----------
@@ -125,7 +125,7 @@ fn list_comp_two_pmaps_cross_product() {
             // (10+1)+(10+2)+(20+1)+(20+2) = 11+12+21+22 = 66
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(66));
+    assert_eq!(v, Value::int(66i64));
 }
 
 // ---------- effects: comprehensions in view fns ----------
@@ -151,7 +151,7 @@ fn comprehension_over_walk_is_callable_in_view() {
     let outcome = Engine::new()
         .execute(src, Fuel::new(20_000), &kv)
         .unwrap();
-    assert_eq!(outcome.result, Value::Int(2));
+    assert_eq!(outcome.result, Value::int(2i64));
 }
 
 // ---------- for-in sugar over pmap/pvec state directly ----------
@@ -186,7 +186,7 @@ fn for_in_pvec_state_iterates_elements() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(55));
+    assert_eq!(v, Value::int(55i64));
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn list_comp_over_pmap_state_directly() {
             return len([v for v in amounts if v > 100u64]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn for_in_explicit_walk_still_works() {
             return total;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(6));
+    assert_eq!(v, Value::int(6i64));
 }
 
 // ---------- aggregation patterns (preview of slice 3) ----------
@@ -280,5 +280,5 @@ fn manual_count_pattern_over_pmap_with_filter() {
             return len([v for v in pmap_values(amounts) if v >= 50u64]);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }

@@ -23,8 +23,8 @@ fn unset_state_reads_as_default_zero() {
         fn main() -> i64 { return count; }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
-    assert_eq!(out.reads.get(&root("count")), Some(&Value::Int(0)));
+    assert_eq!(out.result, Value::int(0i64));
+    assert_eq!(out.reads.get(&root("count")), Some(&Value::int(0i64)));
     assert!(out.writes.is_empty());
 }
 
@@ -39,8 +39,8 @@ fn assignment_records_a_write() {
         }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(7));
-    assert_eq!(out.writes.get(&root("count")), Some(&Value::Int(7)));
+    assert_eq!(out.result, Value::int(7i64));
+    assert_eq!(out.writes.get(&root("count")), Some(&Value::int(7i64)));
 }
 
 #[test]
@@ -55,8 +55,8 @@ fn read_your_writes_within_a_tx() {
         }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(15));
-    assert_eq!(out.writes.get(&root("count")), Some(&Value::Int(15)));
+    assert_eq!(out.result, Value::int(15i64));
+    assert_eq!(out.writes.get(&root("count")), Some(&Value::int(15i64)));
 }
 
 #[test]
@@ -69,18 +69,18 @@ fn host_can_commit_and_re_run() {
     ";
 
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(1));
-    assert_eq!(out.reads.get(&root("count")), Some(&Value::Int(0)));
-    assert_eq!(out.writes.get(&root("count")), Some(&Value::Int(1)));
+    assert_eq!(out.result, Value::int(1i64));
+    assert_eq!(out.reads.get(&root("count")), Some(&Value::int(0i64)));
+    assert_eq!(out.writes.get(&root("count")), Some(&Value::int(1i64)));
     kv.apply(&out.writes);
 
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(2));
-    assert_eq!(out.reads.get(&root("count")), Some(&Value::Int(1)));
+    assert_eq!(out.result, Value::int(2i64));
+    assert_eq!(out.reads.get(&root("count")), Some(&Value::int(1i64)));
     kv.apply(&out.writes);
 
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(3));
+    assert_eq!(out.result, Value::int(3i64));
 }
 
 #[test]
@@ -96,9 +96,9 @@ fn read_set_only_records_first_observation() {
         }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
     assert_eq!(out.reads.len(), 1);
-    assert_eq!(out.reads.get(&root("x")), Some(&Value::Int(0)));
+    assert_eq!(out.reads.get(&root("x")), Some(&Value::int(0i64)));
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn local_mutation_is_allowed_for_copy_types() {
         }
     ";
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(6));
+    assert_eq!(out.result, Value::int(6i64));
 }
 
 #[test]
@@ -168,5 +168,5 @@ fn kv_stores_serialized_bytes_after_apply() {
     let out = engine().execute(src, Fuel::new(1000), &kv).unwrap();
     kv.apply(&out.writes);
     let stored = kv.get_typed(root("count"), &Type::Int);
-    assert_eq!(stored, Some(Value::Int(42)));
+    assert_eq!(stored, Some(Value::int(42i64)));
 }

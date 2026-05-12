@@ -25,7 +25,7 @@ fn main_calling_entry_helper_is_allowed() {
         entry fn helper() -> i64 { return 42; }
         fn main() -> i64 { return helper(); }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn entry_can_call_non_entry_helpers() {
         entry fn public_doubler(n: i64) -> i64 { return private_add(n, n); }
         fn main() -> i64 { return public_doubler(7); }
     ").unwrap();
-    assert_eq!(v, Value::Int(14));
+    assert_eq!(v, Value::int(14i64));
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn deep_internal_call_chain_is_fine_under_entry_root() {
         entry fn surface(n: i64) -> i64 { return level1(n); }
         fn main() -> i64 { return surface(0); }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn main_calling_builtin_is_always_fine() {
     let v = run("
         fn main() -> i64 { return len([1, 2, 3]); }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn main_calling_host_import_is_always_fine() {
         fn main() -> i64 { return triple(7); }
     ";
     let out = engine.execute(src, rend::Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(21));
+    assert_eq!(out.result, Value::int(21i64));
 }
 
 #[test]

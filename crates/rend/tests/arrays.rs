@@ -10,13 +10,13 @@ use rend::{run, Engine, Fuel};
 #[test]
 fn array_literal_evaluates_to_array_value() {
     let v = run("fn main() -> [i64] { return [1, 2, 3]; }").unwrap();
-    assert_eq!(v, Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+    assert_eq!(v, Value::Array(vec![Value::int(1i64), Value::int(2i64), Value::int(3i64)]));
 }
 
 #[test]
 fn array_index_reads_element() {
     let v = run("fn main() -> i64 { return [10, 20, 30][1]; }").unwrap();
-    assert_eq!(v, Value::Int(20));
+    assert_eq!(v, Value::int(20i64));
 }
 
 #[test]
@@ -28,13 +28,13 @@ fn array_index_out_of_bounds_is_runtime_error() {
 #[test]
 fn len_returns_array_length() {
     let v = run("fn main() -> i64 { return len([10, 20, 30, 40]); }").unwrap();
-    assert_eq!(v, Value::Int(4));
+    assert_eq!(v, Value::int(4i64));
 }
 
 #[test]
 fn len_works_on_strings_too() {
     let v = run(r#"fn main() -> i64 { return len("hello"); }"#).unwrap();
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn array_passes_through_function_calls() {
         fn main() -> i64 { return sum([1, 2, 3, 4, 5]); }
     ";
     let v = run(src).unwrap();
-    assert_eq!(v, Value::Int(15));
+    assert_eq!(v, Value::int(15i64));
 }
 
 #[test]
@@ -74,14 +74,14 @@ fn arrays_can_be_stored_in_state() {
         }
     ";
     let out = engine.execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(3));
+    assert_eq!(out.result, Value::int(3i64));
     kv.apply(&out.writes);
 
     // re-read after commit
     let stored = kv.get_typed(state_root("main", "log"), &Type::Array(Box::new(Type::Int)));
     assert_eq!(
         stored,
-        Some(Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)])),
+        Some(Value::Array(vec![Value::int(10i64), Value::int(20i64), Value::int(30i64)])),
     );
 }
 
@@ -98,18 +98,18 @@ fn arrays_can_be_map_keys() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(7)); // 2 + 5
+    assert_eq!(out.result, Value::int(7i64)); // 2 + 5
 
     let key12 = child(
         state_root("main", "visits"),
-        &serialize(&Value::Array(vec![Value::Int(1), Value::Int(2)])),
+        &serialize(&Value::Array(vec![Value::int(1i64), Value::int(2i64)])),
     );
     let key34 = child(
         state_root("main", "visits"),
-        &serialize(&Value::Array(vec![Value::Int(3), Value::Int(4)])),
+        &serialize(&Value::Array(vec![Value::int(3i64), Value::int(4i64)])),
     );
-    assert_eq!(out.writes.get(&key12), Some(&Value::Int(2)));
-    assert_eq!(out.writes.get(&key34), Some(&Value::Int(5)));
+    assert_eq!(out.writes.get(&key12), Some(&Value::int(2i64)));
+    assert_eq!(out.writes.get(&key34), Some(&Value::int(5i64)));
     assert_ne!(key12, key34, "different array keys must not collide");
 }
 
@@ -125,7 +125,7 @@ fn nested_array_round_trips_through_storage() {
         }
     ";
     let out = engine.execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(3));
+    assert_eq!(out.result, Value::int(3i64));
     kv.apply(&out.writes);
 
     let stored = kv.get_typed(
@@ -135,8 +135,8 @@ fn nested_array_round_trips_through_storage() {
     assert_eq!(
         stored,
         Some(Value::Array(vec![
-            Value::Array(vec![Value::Int(1), Value::Int(2)]),
-            Value::Array(vec![Value::Int(3), Value::Int(4)]),
+            Value::Array(vec![Value::int(1i64), Value::int(2i64)]),
+            Value::Array(vec![Value::int(3i64), Value::int(4i64)]),
         ])),
     );
 }

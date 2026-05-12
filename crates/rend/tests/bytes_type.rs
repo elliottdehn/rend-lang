@@ -12,7 +12,7 @@ fn to_bytes_round_trips_utf8() {
             return bytes_len(b);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(5));
+    assert_eq!(v, Value::int(5i64));
 }
 
 #[test]
@@ -25,7 +25,7 @@ fn bytes_concat_combines() {
             return bytes_len(c);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(6));
+    assert_eq!(v, Value::int(6i64));
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn bytes_round_trips_through_state() {
         fn main() -> i64 { return bytes_len(blob); }
     "#;
     let out = Engine::new().execute(read, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(9));
+    assert_eq!(out.result, Value::int(9i64));
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn bytes_can_key_a_state_map() {
         }
     "#;
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(42));
+    assert_eq!(out.result, Value::int(42i64));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn empty_bytes_default_is_canonical() {
         fn main() -> i64 { return bytes_len(b); }
     "#;
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn bytes_in_struct_field() {
             return bytes_len(sig.r) + bytes_len(sig.s);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(8));
+    assert_eq!(v, Value::int(8i64));
 }
 
 #[test]

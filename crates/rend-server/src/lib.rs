@@ -651,7 +651,20 @@ fn parse_hash(s: &str) -> Result<u128, ServerError> {
 fn value_to_json(v: &Value) -> serde_json::Value {
     use serde_json::Value as J;
     match v {
-        Value::Int(n) => J::Number((*n).into()),
+        Value::Int(n) => {
+            // BigInt may exceed JSON Number precision. Try the common
+            // fast paths first; if the value doesn't fit, render as
+            // a decimal string. This keeps small ints small in the
+            // wire payload but preserves arbitrary-precision values.
+            use num_traits::ToPrimitive;
+            if let Some(v) = n.to_i64() {
+                J::Number(v.into())
+            } else if let Some(v) = n.to_u64() {
+                J::Number(v.into())
+            } else {
+                J::String(n.to_string())
+            }
+        }
         Value::I32(n) => J::Number((*n).into()),
         Value::U32(n) => J::Number((*n).into()),
         Value::U64(n) => J::Number((*n).into()),

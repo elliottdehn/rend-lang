@@ -74,7 +74,7 @@ fn msg_sender_powers_only_owner_pattern() {
     let out = Engine::new()
         .execute_with_context(src, ctx, Fuel::new(10_000), &kv)
         .unwrap();
-    assert_eq!(out.result, Value::Int(1));
+    assert_eq!(out.result, Value::int(1i64));
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn context_reads_dont_break_static_read_clusters() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
 }
 
 #[test]

@@ -191,7 +191,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
             match instr {
                 Instr::LoadConst { dst, idx } => {
                     regs[dst as usize] = match &f.consts[idx as usize] {
-                        Const::Int(n) => Value::Int(*n),
+                        Const::Int(n) => Value::int(n.clone()),
                         Const::I32(n) => Value::I32(*n),
                         Const::U32(n) => Value::U32(*n),
                         Const::U64(n) => Value::U64(*n),
@@ -413,10 +413,17 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 Instr::BuiltinResource { dst, src } => {
                     let v = self.force_reg(&mut regs, src);
                     regs[dst as usize] = match v {
-                        Value::Int(n) => Value::Resource(n),
+                        Value::Int(ref n) => match num_traits::ToPrimitive::to_i64(n) {
+                            Some(v) => Value::Resource(v),
+                            None => return Err(Error::new(
+                                ErrorKind::Runtime,
+                                format!("resource(): int out of i64 range: {n}"),
+                                Span::default(),
+                            )),
+                        },
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
-                            format!("resource() expects i64, got {other}"),
+                            format!("resource() expects int, got {other}"),
                             Span::default(),
                         )),
                     };
@@ -424,7 +431,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 Instr::BuiltinUnwrap { dst, src } => {
                     let v = self.force_reg(&mut regs, src);
                     regs[dst as usize] = match v {
-                        Value::Resource(n) => Value::Int(n),
+                        Value::Resource(n) => Value::int(n),
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
                             format!("unwrap() expects Resource, got {other}"),
@@ -450,10 +457,10 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     // requires the array's spine to be concrete.
                     let v = self.force_reg_spine(&mut regs, src);
                     regs[dst as usize] = match v {
-                        Value::Array(elems) => Value::Int(elems.len() as i64),
-                        Value::Str(s) => Value::Int(s.as_bytes().len() as i64),
-                        Value::Set(elems) => Value::Int(elems.len() as i64),
-                        Value::Dict(pairs) => Value::Int(pairs.len() as i64),
+                        Value::Array(elems) => Value::int(elems.len()),
+                        Value::Str(s) => Value::int(s.as_bytes().len()),
+                        Value::Set(elems) => Value::int(elems.len()),
+                        Value::Dict(pairs) => Value::int(pairs.len()),
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
                             format!("len() expects array or string, got {other}"),
@@ -610,18 +617,19 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     let (Value::Array(elems), Value::Int(i)) = (arr_val, idx_val) else {
                         return Err(Error::new(
                             ErrorKind::Runtime,
-                            "array index requires [T] and i64".to_string(),
+                            "array index requires [T] and int".to_string(),
                             Span::default(),
                         ));
                     };
-                    if i < 0 || (i as usize) >= elems.len() {
-                        return Err(Error::new(
+                    let idx = match num_traits::ToPrimitive::to_usize(&i) {
+                        Some(v) if v < elems.len() => v,
+                        _ => return Err(Error::new(
                             ErrorKind::Runtime,
                             format!("array index out of bounds: {i} of {}", elems.len()),
                             Span::default(),
-                        ));
-                    }
-                    regs[dst as usize] = elems[i as usize].clone();
+                        )),
+                    };
+                    regs[dst as usize] = elems[idx].clone();
                 }
                 Instr::KvGet { dst, key_idx } => {
                     let key = module.state_roots[key_idx as usize];
@@ -703,7 +711,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                             format!("variant '{variant_name}' not found in '{enum_name}'"),
                             Span::default(),
                         ))?;
-                    regs[dst as usize] = Value::Int(idx as i64);
+                    regs[dst as usize] = Value::int(idx);
                 }
                 Instr::EnumPayload { dst, src, index } => {
                     let v = self.force_reg_spine(&mut regs, src);
@@ -933,7 +941,14 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         _ => (0, crate::pvec::EMPTY),
                     };
                     let i = match idx_v {
-                        Value::Int(n) if n >= 0 => n as u64,
+                        Value::Int(ref n) => match num_traits::ToPrimitive::to_u64(n) {
+                            Some(v) => v,
+                            None => return Err(Error::new(
+                                ErrorKind::Runtime,
+                                format!("pvec index out of u64 range: {n}"),
+                                Span::default(),
+                            )),
+                        },
                         Value::Int(n) => return Err(Error::new(
                             ErrorKind::Runtime,
                             format!("pvec index must be non-negative, got {n}"),
@@ -965,7 +980,14 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         _ => (0, crate::pvec::EMPTY),
                     };
                     let i = match idx_v {
-                        Value::Int(n) if n >= 0 => n as u64,
+                        Value::Int(ref n) => match num_traits::ToPrimitive::to_u64(n) {
+                            Some(v) => v,
+                            None => return Err(Error::new(
+                                ErrorKind::Runtime,
+                                format!("pvec index out of u64 range: {n}"),
+                                Span::default(),
+                            )),
+                        },
                         other => return Err(Error::new(
                             ErrorKind::Runtime,
                             format!("pvec index: expected non-negative i64, got {other}"),
@@ -1508,8 +1530,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                 Instr::IncReg { reg } => {
                     let v = self.force_reg(&mut regs, reg);
                     regs[reg as usize] = match v {
-                        Value::Int(n)  => Value::Int(n.checked_add(1).ok_or_else(|| Error::new(
-                            ErrorKind::Runtime, "integer overflow", Span::default()))?),
+                        Value::Int(n)  => Value::Int(n + 1),
                         Value::I32(n)  => Value::I32(n.checked_add(1).ok_or_else(|| Error::new(
                             ErrorKind::Runtime, "integer overflow", Span::default()))?),
                         Value::U32(n)  => Value::U32(n.checked_add(1).ok_or_else(|| Error::new(

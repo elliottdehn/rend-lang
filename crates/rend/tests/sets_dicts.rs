@@ -6,7 +6,7 @@ use rend::{run, Engine, Fuel};
 #[test]
 fn set_literal_dedupes() {
     let v = run("fn main() -> i64 { return set_len(set{1, 2, 1, 3, 2}); }").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn set_insert_returns_new_set() {
             return set_len(a) + set_len(b);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(5)); // 2 + 3
+    assert_eq!(v, Value::int(5i64)); // 2 + 3
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn set_insert_duplicate_is_noop() {
             return set_len(s);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn set_comprehension_with_filter() {
             return set_len(s);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2)); // {4, 16}
+    assert_eq!(v, Value::int(2i64)); // {4, 16}
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn dict_literal_and_get() {
             return dict_get(d, 2, 0);
         }
     "#).unwrap();
-    assert_eq!(v, Value::Int(200));
+    assert_eq!(v, Value::int(200i64));
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn dict_get_missing_returns_default() {
             return dict_get(d, 99, -1);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(-1));
+    assert_eq!(v, Value::int(-1i64));
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn dict_set_overwrites_existing() {
             return dict_get(d, 1, 0);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(999));
+    assert_eq!(v, Value::int(999i64));
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn dict_comprehension() {
             return dict_get(d, 3, 0);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(9));
+    assert_eq!(v, Value::int(9i64));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn dict_comprehension_with_filter() {
             return dict_len(d);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn nested_set_in_dict_value() {
             return set_len(dict_get(d, 1, set{0}));
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(2));
+    assert_eq!(v, Value::int(2i64));
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn dict_in_pipe_chain() {
                 |> dict_get($$, 3, 0);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(30));
+    assert_eq!(v, Value::int(30i64));
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn example_20_sets_runs() {
     let kv = rend::kv::InMemoryKv::new();
     let src = std::fs::read_to_string("examples/20_sets.rd").unwrap();
     let out = Engine::new().execute(&src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(10));
+    assert_eq!(out.result, Value::int(10i64));
 }
 
 #[test]
@@ -187,5 +187,5 @@ fn example_21_dicts_runs() {
     let kv = rend::kv::InMemoryKv::new();
     let src = std::fs::read_to_string("examples/21_dicts.rd").unwrap();
     let out = Engine::new().execute(&src, Fuel::new(50_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(4));
+    assert_eq!(out.result, Value::int(4i64));
 }

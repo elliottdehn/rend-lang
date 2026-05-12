@@ -204,7 +204,7 @@ fn example_39_indexed_lookup_and_aggregations_via_query_path() {
     let r = Engine::new()
         .query(&q_tx, &[artifact.clone()], Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(3));
+    assert_eq!(r.result, Value::int(3i64));
 
     // Average eng salary: (150 + 130 + 140) / 3 = 140 thousand.
     let q = "module q;
@@ -246,7 +246,7 @@ fn example_39_multi_index_queries() {
     let r = Engine::new()
         .query(&q_tx, &[artifact], Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(2));
+    assert_eq!(r.result, Value::int(2i64));
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn example_39_paginated_query_through_sorted_index() {
     let r = Engine::new()
         .query(&q_tx, &[artifact.clone()], Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(4));
+    assert_eq!(r.result, Value::int(4i64));
 
     // first_id() — smallest id seeded is 1.
     let q = "module q;
@@ -354,7 +354,7 @@ fn example_40_indexed_lookups_and_aggregations() {
     let r = Engine::new()
         .query(&q_tx, &[artifact.clone()], Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(3));
+    assert_eq!(r.result, Value::int(3i64));
 
     // total_purchase_amount(100) — sums "amount" field from JSON
     // payloads of alice's purchase events: 25 + 50 = 75.
@@ -364,7 +364,7 @@ fn example_40_indexed_lookups_and_aggregations() {
     let r = Engine::new()
         .query(&q_tx, &[artifact.clone()], Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(75));
+    assert_eq!(r.result, Value::int(75i64));
 
     // page(0, 3) — sorted-index range over keys [0, 3] inclusive.
     // Seq numbers start at 1, so this matches seqs 1, 2, 3 = 3 events.
@@ -374,7 +374,7 @@ fn example_40_indexed_lookups_and_aggregations() {
     let r = Engine::new()
         .query(&q_tx, &[artifact.clone()], Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(3));
+    assert_eq!(r.result, Value::int(3i64));
 
     // session_id_for(2) — JSON path access on stored payload.
     let q = "module q;
@@ -414,7 +414,7 @@ fn example_40_delete_cleans_indexes() {
     let r = Engine::new()
         .query(&q_tx, &[artifact.clone()], Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(2));
+    assert_eq!(r.result, Value::int(2i64));
 
     let q = "module q;
         view fn main() -> i64 { return event_log::total_purchase_amount(100u64); }";
@@ -422,7 +422,7 @@ fn example_40_delete_cleans_indexes() {
     let r = Engine::new()
         .query(&q_tx, &[artifact], Fuel::new(100_000), &kv)
         .unwrap();
-    assert_eq!(r.result, Value::Int(50));
+    assert_eq!(r.result, Value::int(50i64));
 }
 
 #[test]

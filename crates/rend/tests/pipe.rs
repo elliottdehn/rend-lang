@@ -9,7 +9,7 @@ fn single_pipe() {
         entry fn double(n: i64) -> i64 { return n * 2; }
         fn main() -> i64 { return (5) |> double($$); }
     ").unwrap();
-    assert_eq!(v, Value::Int(10));
+    assert_eq!(v, Value::int(10i64));
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn left_associative_chain() {
                 |> square($$);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(400));
+    assert_eq!(v, Value::int(400i64));
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn dollar_dollar_can_appear_anywhere() {
                 |> $$ * $$;              // $$ used twice
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(196));    // ((3+1)+10)^2 = 14^2 = 196
+    assert_eq!(v, Value::int(196i64));    // ((3+1)+10)^2 = 14^2 = 196
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn arithmetic_in_pipe_stage() {
     let v = run("
         fn main() -> i64 { return (10) |> ($$ - 1) * 2 |> $$ + 1; }
     ").unwrap();
-    assert_eq!(v, Value::Int(19));   // ((10-1)*2)+1 = 19
+    assert_eq!(v, Value::int(19i64));   // ((10-1)*2)+1 = 19
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn pipe_with_indexing() {
                 |> $$[1];
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(200));
+    assert_eq!(v, Value::int(200i64));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn pipe_through_state_with_engine() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(21));
+    assert_eq!(out.result, Value::int(21i64));
 }
 
 #[test]
@@ -85,5 +85,5 @@ fn example_23_pipe_runs() {
     let kv = rend::kv::InMemoryKv::new();
     let src = std::fs::read_to_string("examples/23_pipe.rd").unwrap();
     let out = Engine::new().execute(&src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(800));
+    assert_eq!(out.result, Value::int(800i64));
 }

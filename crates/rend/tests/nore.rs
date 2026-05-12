@@ -28,7 +28,7 @@ fn non_recursive_call_to_nore_fn_works() {
         nore entry fn pure_op() -> i64 { return 42; }
         fn main() -> i64 { return pure_op(); }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn sequential_invocations_of_nore_fn_each_succeed() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn nore_releases_slot_after_normal_return() {
             return a + b + c;     // 11 + 1 + 11 = 23
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(23));
+    assert_eq!(v, Value::int(23i64));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn nore_only_guards_the_specific_function_not_others_in_module() {
         nore entry fn b() -> i64 { return 10; }
         fn main() -> i64 { return a(); }
     ").unwrap();
-    assert_eq!(v, Value::Int(11));
+    assert_eq!(v, Value::int(11i64));
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn non_nore_recursion_still_works() {
         }
         fn main() -> i64 { return fib(7); }
     ").unwrap();
-    assert_eq!(v, Value::Int(13));
+    assert_eq!(v, Value::int(13i64));
 }
 
 #[test]
@@ -150,6 +150,6 @@ fn nore_can_combine_with_entry_in_either_order() {
         entry nore fn op() -> i64 { return 1; }
         fn main() -> i64 { return op(); }
     ").unwrap();
-    assert_eq!(v1, Value::Int(1));
-    assert_eq!(v2, Value::Int(1));
+    assert_eq!(v1, Value::int(1i64));
+    assert_eq!(v2, Value::int(1i64));
 }

@@ -183,7 +183,7 @@ fn pbtree_range_empty_when_no_overlap() {
             return len(pbtree_range(h, 100u64, 200u64));
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn pbtree_range_works_in_view_fn() {
     let outcome = Engine::new()
         .execute(src, Fuel::new(50_000), &kv)
         .unwrap();
-    assert_eq!(outcome.result, Value::Int(5));
+    assert_eq!(outcome.result, Value::int(5i64));
 }
 
 // ---------- comprehensions over pbtree stream ----------

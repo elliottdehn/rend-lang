@@ -534,7 +534,7 @@ mod tests {
         optimize(&mut bc, &effects);
         let v = crate::vm::run(&bc, "main", &[], crate::vm::Fuel::new(10_000)).unwrap();
         // Defaults are 0; 0 + 0 >= 0 → take the then-branch → 30.
-        assert_eq!(v, crate::value::Value::Int(30));
+        assert_eq!(v, crate::value::Value::int(30i64));
     }
 
     #[test]
@@ -561,6 +561,6 @@ mod tests {
         assert_eq!(f.read_groups.len(), 1);
         assert_eq!(f.read_groups[0].len(), 5);
         let v = crate::vm::run(&bc, "main", &[], crate::vm::Fuel::new(10_000)).unwrap();
-        assert_eq!(v, crate::value::Value::Int(0)); // all defaults
+        assert_eq!(v, crate::value::Value::int(0i64)); // all defaults
     }
 }

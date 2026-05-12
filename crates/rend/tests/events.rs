@@ -22,7 +22,7 @@ fn emit_appears_in_outcome_log() {
     assert_eq!(out.events.len(), 1);
     assert_eq!(out.events[0].name, "Hello");
     assert_eq!(out.events[0].module, "main");
-    assert_eq!(out.events[0].args, vec![Value::Int(42)]);
+    assert_eq!(out.events[0].args, vec![Value::int(42i64)]);
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn emits_appear_in_emission_order() {
         .events
         .iter()
         .map(|e| match &e.args[0] {
-            Value::Int(n) => *n,
+            Value::Int(n) => num_traits::ToPrimitive::to_i64(n).expect("fits"),
             _ => panic!(),
         })
         .collect();
@@ -204,7 +204,7 @@ fn cross_module_emit_is_tagged_with_emitting_module() {
     assert_eq!(out.events[0].name, "Transfer");
     assert_eq!(
         out.events[0].args,
-        vec![Value::Int(1), Value::Int(2), Value::Int(100)],
+        vec![Value::int(1i64), Value::int(2i64), Value::int(100i64)],
     );
 }
 
@@ -254,8 +254,8 @@ fn struct_typed_event_arg_works() {
     };
     assert_eq!(name, "Point");
     assert_eq!(fields, &vec![
-        ("x".into(), Value::Int(3)),
-        ("y".into(), Value::Int(4)),
+        ("x".into(), Value::int(3i64)),
+        ("y".into(), Value::int(4i64)),
     ]);
 }
 
@@ -285,7 +285,7 @@ fn event_arg_can_carry_lazy_state_value() {
     ";
     let out = Engine::new().execute(src, Fuel::new(1000), &kv).unwrap();
     assert_eq!(out.events.len(), 1);
-    assert_eq!(out.events[0].args, vec![Value::Int(99)]);
+    assert_eq!(out.events[0].args, vec![Value::int(99i64)]);
 }
 
 #[test]

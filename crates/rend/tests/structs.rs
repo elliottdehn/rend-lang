@@ -27,7 +27,7 @@ fn struct_literal_and_field_access() {
         }
     ";
     let v = run(src).unwrap();
-    assert_eq!(v, Value::Int(7));
+    assert_eq!(v, Value::int(7i64));
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn fields_in_literal_can_be_out_of_order() {
             return p.x;
         }
     ";
-    assert_eq!(run(src).unwrap(), Value::Int(1));
+    assert_eq!(run(src).unwrap(), Value::int(1i64));
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn struct_passed_to_function() {
             return dist_sq(p);
         }
     ";
-    assert_eq!(run(src).unwrap(), Value::Int(25));
+    assert_eq!(run(src).unwrap(), Value::int(25i64));
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn struct_can_be_stored_in_state() {
         }
     ";
     let out = engine.execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(30));
+    assert_eq!(out.result, Value::int(30i64));
     kv.apply(&out.writes);
 
     // Granular state layout: each leaf field lives in its own cell at
@@ -103,8 +103,8 @@ fn struct_can_be_stored_in_state() {
     let root = state_root("main", "origin");
     let x_key = rend::hashing::child(root, b"x");
     let y_key = rend::hashing::child(root, b"y");
-    assert_eq!(kv.get_typed(x_key, &rend::ast::Type::Int), Some(Value::Int(10)));
-    assert_eq!(kv.get_typed(y_key, &rend::ast::Type::Int), Some(Value::Int(20)));
+    assert_eq!(kv.get_typed(x_key, &rend::ast::Type::Int), Some(Value::int(10i64)));
+    assert_eq!(kv.get_typed(y_key, &rend::ast::Type::Int), Some(Value::int(20i64)));
     let _ = point_type;
 }
 
@@ -121,7 +121,7 @@ fn struct_can_be_a_map_key() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(12));
+    assert_eq!(out.result, Value::int(12i64));
 
     // Compute the cell key host-side and verify
     let key00 = child(
@@ -129,12 +129,12 @@ fn struct_can_be_a_map_key() {
         &serialize(&Value::Struct {
             name: "Coord".into(),
             fields: vec![
-                ("x".into(), Value::Int(0)),
-                ("y".into(), Value::Int(0)),
+                ("x".into(), Value::int(0i64)),
+                ("y".into(), Value::int(0i64)),
             ],
         }),
     );
-    assert_eq!(out.writes.get(&key00), Some(&Value::Int(5)));
+    assert_eq!(out.writes.get(&key00), Some(&Value::int(5i64)));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn struct_default_value_when_state_unset() {
         }
     ";
     let out = Engine::new().execute(src, Fuel::new(1000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(0));
+    assert_eq!(out.result, Value::int(0i64));
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn struct_with_string_field() {
             return p.age;
         }
     "#;
-    assert_eq!(run(src).unwrap(), Value::Int(30));
+    assert_eq!(run(src).unwrap(), Value::int(30i64));
 }
 
 #[test]

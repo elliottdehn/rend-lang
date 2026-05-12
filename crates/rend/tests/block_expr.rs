@@ -15,7 +15,7 @@ fn fn_body_implicit_return_via_tail_expression() {
             x * 6
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn block_as_let_rhs() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(30));
+    assert_eq!(v, Value::int(30i64));
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn if_as_expression_picks_then_arm() {
             return x;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(11));
+    assert_eq!(v, Value::int(11i64));
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn if_as_expression_picks_else_arm() {
             return x;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(22));
+    assert_eq!(v, Value::int(22i64));
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn if_as_expression_with_multi_stmt_arms() {
             return result;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(11));
+    assert_eq!(v, Value::int(11i64));
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn else_if_chain_as_expression() {
             return label;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(103));
+    assert_eq!(v, Value::int(103i64));
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn match_arm_with_multi_stmt_block_body() {
             };
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(42));
+    assert_eq!(v, Value::int(42i64));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn nested_block_expressions() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(12));
+    assert_eq!(v, Value::int(12i64));
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn block_with_no_tail_is_unit() {
             return n;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(6));
+    assert_eq!(v, Value::int(6i64));
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn fn_with_explicit_return_still_works() {
             return 99;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(99));
+    assert_eq!(v, Value::int(99i64));
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn if_expr_used_as_argument() {
             return double(if cond { 5 } else { -5 });
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(10));
+    assert_eq!(v, Value::int(10i64));
 }
 
 #[test]
@@ -232,5 +232,5 @@ fn block_expr_inside_tuple_literal() {
             return a + b;
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(13));
+    assert_eq!(v, Value::int(13i64));
 }

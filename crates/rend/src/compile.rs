@@ -867,10 +867,10 @@ impl<'a> FnCompiler<'a> {
                 let len_reg = self.alloc();
                 self.code.push(Instr::BuiltinLen { dst: len_reg, src: arr_reg });
                 let counter_reg = self.alloc();
-                let zero_idx = self.const_idx(Const::Int(0));
+                let zero_idx = self.const_idx(Const::Int(num_bigint::BigInt::from(0)));
                 self.code.push(Instr::LoadConst { dst: counter_reg, idx: zero_idx });
                 let one_reg = self.alloc();
-                let one_idx = self.const_idx(Const::Int(1));
+                let one_idx = self.const_idx(Const::Int(num_bigint::BigInt::from(1)));
                 self.code.push(Instr::LoadConst { dst: one_reg, idx: one_idx });
                 let var_reg = self.alloc();
                 self.scopes.push(HashMap::new());
@@ -1371,10 +1371,10 @@ impl<'a> FnCompiler<'a> {
         let len_reg = self.alloc();
         self.code.push(Instr::BuiltinLen { dst: len_reg, src: arr_reg });
         let counter_reg = self.alloc();
-        let zero_idx = self.const_idx(Const::Int(0));
+        let zero_idx = self.const_idx(Const::Int(num_bigint::BigInt::from(0)));
         self.code.push(Instr::LoadConst { dst: counter_reg, idx: zero_idx });
         let one_reg = self.alloc();
-        let one_idx = self.const_idx(Const::Int(1));
+        let one_idx = self.const_idx(Const::Int(num_bigint::BigInt::from(1)));
         self.code.push(Instr::LoadConst { dst: one_reg, idx: one_idx });
         let var_reg = self.alloc();
         self.scopes.push(HashMap::new());
@@ -1631,7 +1631,7 @@ impl<'a> FnCompiler<'a> {
     fn compile_expr_into(&mut self, expr: &Expr, dst: u16) -> Result<(), Error> {
         match &expr.kind {
             ExprKind::Int(n) => {
-                let idx = self.const_idx(Const::Int(*n));
+                let idx = self.const_idx(Const::Int(num_bigint::BigInt::from(*n)));
                 self.code.push(Instr::LoadConst { dst, idx });
                 Ok(())
             }
@@ -2366,7 +2366,7 @@ impl<'a> FnCompiler<'a> {
                                 ))? as i64;
                             // tag == variant_idx?
                             let const_reg = self.alloc();
-                            let cidx = self.const_idx(Const::Int(variant_idx));
+                            let cidx = self.const_idx(Const::Int(num_bigint::BigInt::from(variant_idx)));
                             self.code.push(Instr::LoadConst { dst: const_reg, idx: cidx });
                             let cmp = self.alloc();
                             self.code.push(Instr::Bin {

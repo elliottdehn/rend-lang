@@ -20,7 +20,7 @@ fn pmap_entries_walks_every_pair() {
             return len(pmap_entries(balances));
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3));
+    assert_eq!(v, Value::int(3i64));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn pmap_keys_returns_just_keys() {
             return total;     // 5 + 7 + 9
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(21));
+    assert_eq!(v, Value::int(21i64));
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn pmap_entries_on_empty_map_is_empty() {
             return len(pmap_entries(ledger));
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn pmap_entries_after_overwrite_dedupes() {
             return len(pmap_entries(ledger));
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(1));
+    assert_eq!(v, Value::int(1i64));
 }
 
 // ---------- pvec_to_array ----------
@@ -119,7 +119,7 @@ fn pvec_to_array_yields_index_order() {
             // 10 + 200 + 3000 = 3210
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(3210));
+    assert_eq!(v, Value::int(3210i64));
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn pvec_to_array_on_empty_is_empty() {
         state log: pvec<i64>;
         fn main() -> i64 { return len(pvec_to_array(log)); }
     ").unwrap();
-    assert_eq!(v, Value::Int(0));
+    assert_eq!(v, Value::int(0i64));
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn pvec_to_array_handles_partial_last_block() {
             return len(arr);
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(33));
+    assert_eq!(v, Value::int(33i64));
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn pvec_to_array_sum_after_many_pushes() {
             return total;            // 1..=100 = 5050
         }
     ").unwrap();
-    assert_eq!(v, Value::Int(5050));
+    assert_eq!(v, Value::int(5050i64));
 }
 
 // ---------- effects: walks classify as ReadOnly ----------

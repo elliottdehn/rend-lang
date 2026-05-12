@@ -29,8 +29,8 @@ fn struct_state_writes_one_cell_per_leaf() {
     let y_key = child(root, b"y");
     // Two leaf writes; root is just a namespace and gets nothing.
     assert_eq!(out.writes.get(&root), None);
-    assert_eq!(out.writes.get(&x_key), Some(&Value::Int(10)));
-    assert_eq!(out.writes.get(&y_key), Some(&Value::Int(20)));
+    assert_eq!(out.writes.get(&x_key), Some(&Value::int(10i64)));
+    assert_eq!(out.writes.get(&y_key), Some(&Value::int(20i64)));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn writing_one_field_only_writes_that_cell() {
     let y_key = child(root, b"y");
     // Only x is in the write set; y is untouched.
     assert_eq!(out.writes.len(), 1);
-    assert_eq!(out.writes.get(&x_key), Some(&Value::Int(7)));
+    assert_eq!(out.writes.get(&x_key), Some(&Value::int(7i64)));
     assert!(!out.writes.contains_key(&y_key));
 }
 
@@ -113,7 +113,7 @@ fn nested_struct_paths_are_per_leaf() {
     let b_key = child(root, b"b");
     // Only `s.a.v` is written; the other leaves are untouched.
     assert_eq!(out.writes.len(), 1);
-    assert_eq!(out.writes.get(&v_key), Some(&Value::Int(99)));
+    assert_eq!(out.writes.get(&v_key), Some(&Value::int(99i64)));
     assert!(!out.writes.contains_key(&w_key));
     assert!(!out.writes.contains_key(&b_key));
 }
@@ -158,7 +158,7 @@ fn disjoint_field_writes_dont_conflict_under_occ() {
         fn main() -> i64 { return origin.x + origin.y; }
     ";
     let out = engine().execute(read_back, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(33));
+    assert_eq!(out.result, Value::int(33i64));
 }
 
 #[test]
@@ -180,8 +180,8 @@ fn assigning_substruct_splits_into_leaf_writes() {
     let w_key = child(a_key, b"w");
     // s.a's two leaves are written; s.b is untouched.
     assert_eq!(out.writes.len(), 2);
-    assert_eq!(out.writes.get(&v_key), Some(&Value::Int(1)));
-    assert_eq!(out.writes.get(&w_key), Some(&Value::Int(2)));
+    assert_eq!(out.writes.get(&v_key), Some(&Value::int(1i64)));
+    assert_eq!(out.writes.get(&w_key), Some(&Value::int(2i64)));
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn array_field_stays_one_cell() {
     assert_eq!(out.writes.len(), 1);
     assert_eq!(
         out.writes.get(&items_key),
-        Some(&Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
+        Some(&Value::Array(vec![Value::int(1i64), Value::int(2i64), Value::int(3i64)])),
     );
     assert!(!out.writes.contains_key(&count_key));
 }
@@ -247,7 +247,7 @@ fn local_variable_shadowing_state_uses_local_path() {
         }
     ";
     let out = engine().execute(src, Fuel::new(10_000), &kv).unwrap();
-    assert_eq!(out.result, Value::Int(300));
+    assert_eq!(out.result, Value::int(300i64));
     // The local shadow means no state cells are touched at all.
     let root = state_root("main", "s");
     let x_key = child(root, b"x");
@@ -298,6 +298,6 @@ fn primitive_state_unaffected() {
     ";
     let out = engine().execute(src, Fuel::new(10_000), &kv).unwrap();
     let root = state_root("main", "n");
-    assert_eq!(out.writes.get(&root), Some(&Value::Int(42)));
+    assert_eq!(out.writes.get(&root), Some(&Value::int(42i64)));
     let _ = Type::Int; // silence import
 }
