@@ -34,8 +34,14 @@ pub enum Token {
     /// fields get their own cells, grouped fields are read/written
     /// together as a blob.
     Group,
+    /// `pub struct ...` — marks the declaration as visible to other
+    /// modules. Bare `struct` stays private to its declaring module.
+    /// Used together with the `module::Type` reference syntax to
+    /// hand a typed value across the module boundary (e.g. an event
+    /// emitted from one module that a handler in another listens
+    /// for).
+    Pub,
     Module,
-    Event,
     Emit,
     Nore,
     Modifier,

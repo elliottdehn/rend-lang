@@ -159,9 +159,7 @@ fn substitute_params_in_stmt(stmt: &mut Stmt, subst: &HashMap<String, Expr>) {
         }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Placeholder(_) => {}
         Stmt::Expr(e) => substitute_in_expr(e, subst),
-        Stmt::Emit { args, .. } => {
-            for a in args { substitute_in_expr(a, subst); }
-        }
+        Stmt::Emit { value, .. } => substitute_in_expr(value, subst),
         Stmt::Delete { target, .. } => substitute_in_expr(target, subst),
         Stmt::LetTuple { value, .. } => substitute_in_expr(value, subst),
     }

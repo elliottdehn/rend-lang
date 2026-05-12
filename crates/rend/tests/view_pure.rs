@@ -41,9 +41,9 @@ fn view_fn_writing_state_is_compile_error() {
 #[test]
 fn view_fn_emitting_event_is_compile_error() {
     let err = run("
-        event Logged(n: i64);
+        struct Logged { n: i64 }
         entry view fn bad() -> i64 {
-            emit Logged(1);
+            emit Logged { n: 1 };
             return 0;
         }
         fn main() -> i64 { return bad(); }

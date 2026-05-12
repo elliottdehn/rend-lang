@@ -235,12 +235,11 @@ fn check_stmt(
             check_expr(e, env, sigs, states, cap_decls)?;
             Ok(())
         }
-        Stmt::Emit { args, .. } => {
-            // Each arg is consumed (eventually serialized into the
-            // log) — walk to track moves of non-Copy values.
-            for a in args {
-                check_expr(a, env, sigs, states, cap_decls)?;
-            }
+        Stmt::Emit { value, .. } => {
+            // The emitted struct value is consumed (serialized into
+            // the event log + handed to handlers). Walk the
+            // expression to track moves of non-Copy contents.
+            check_expr(value, env, sigs, states, cap_decls)?;
             Ok(())
         }
         Stmt::Delete { target, .. } => {

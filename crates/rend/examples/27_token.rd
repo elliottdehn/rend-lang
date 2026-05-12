@@ -2,7 +2,7 @@
 //
 // This example flexes the recently-landed language pieces:
 //   - `module <name>;`              top-of-file module declaration
-//   - `event Foo(...);` / `emit`    Solidity-style logging
+//   - struct-shaped events          `emit Foo { ... };`
 //   - `assert(cond, "msg")`         invariant checks at boundaries
 //   - composite struct map keys     allowances keyed by (owner, spender)
 //   - granular struct state         meta: Meta gets one cell per field
@@ -22,10 +22,12 @@ state total_supply: u64;
 state balances:     map<Address, u64>;
 state allowances:   map<AllowanceKey, u64>;
 
-event Transfer(from: Address, to: Address, amount: u64);
-event Approval(owner: Address, spender: Address, amount: u64);
-event Mint(to: Address, amount: u64);
-event Burn(from: Address, amount: u64);
+// Events are just structs — emit a value, the runtime logs (module,
+// struct_name, fields) so the host can recognize the shape.
+struct Transfer { from: Address, to: Address, amount: u64 }
+struct Approval { owner: Address, spender: Address, amount: u64 }
+struct Mint     { to: Address, amount: u64 }
+struct Burn     { from: Address, amount: u64 }
 
 entry fn init(name: string, symbol: string, decimals: u32) {
     // Granular state: each field becomes its own KV cell at
@@ -45,7 +47,7 @@ entry fn allowance(owner: Address, spender: Address) -> u64 {
 
 entry fn approve(owner: Address, spender: Address, amount: u64) -> bool {
     allowances[AllowanceKey { owner: owner, spender: spender }] = amount;
-    emit Approval(owner, spender, amount);
+    emit Approval { owner: owner, spender: spender, amount: amount };
     return true;
 }
 
@@ -54,7 +56,7 @@ entry fn transfer(from: Address, to: Address, amount: u64) -> bool {
     assert(b >= amount, "insufficient balance");
     balances[from] = b - amount;
     balances[to]   = balances[to] + amount;
-    emit Transfer(from, to, amount);
+    emit Transfer { from: from, to: to, amount: amount };
     return true;
 }
 
@@ -67,16 +69,16 @@ entry fn transfer_from(spender: Address, from: Address, to: Address, amount: u64
     allowances[k]  = allowed - amount;
     balances[from] = b - amount;
     balances[to]   = balances[to] + amount;
-    emit Transfer(from, to, amount);
+    emit Transfer { from: from, to: to, amount: amount };
     return true;
 }
 
 entry fn mint(to: Address, amount: u64) -> bool {
     balances[to] = balances[to] + amount;
     total_supply = total_supply + amount;
-    emit Mint(to, amount);
+    emit Mint { to: to, amount: amount };
     // ERC20 convention: mint emits Transfer from the zero address.
-    emit Transfer(address(""), to, amount);
+    emit Transfer { from: address(""), to: to, amount: amount };
     return true;
 }
 
@@ -85,8 +87,8 @@ entry fn burn(from: Address, amount: u64) -> bool {
     assert(b >= amount, "insufficient balance");
     balances[from] = b - amount;
     total_supply   = total_supply - amount;
-    emit Burn(from, amount);
-    emit Transfer(from, address(""), amount);
+    emit Burn { from: from, amount: amount };
+    emit Transfer { from: from, to: address(""), amount: amount };
     return true;
 }
 

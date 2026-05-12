@@ -31,9 +31,10 @@ state book:    map<i64, Proposal>;
 state next_id: i64;
 state voted:   map<VoteKey, bool>;
 
-event Proposed(id: i64, proposer: Address, target: Address, amount: u64);
-event Voted(id: i64, voter: Address, support: bool, weight: u64);
-event Executed(id: i64, passed: bool, yes: u64, no: u64);
+// Events are struct values; `emit Foo { ... }` logs them.
+struct Proposed { id: i64, proposer: Address, target: Address, amount: u64 }
+struct Voted    { id: i64, voter: Address, support: bool, weight: u64 }
+struct Executed { id: i64, passed: bool, yes: u64, no: u64 }
 
 entry fn propose(proposer: Address, target: Address, amount: u64) -> i64 {
     assert(members::is_member(proposer), "only members can propose");
@@ -48,7 +49,9 @@ entry fn propose(proposer: Address, target: Address, amount: u64) -> i64 {
         executed:  false,
         passed:    false,
     };
-    emit Proposed(id, proposer, target, amount);
+    emit Proposed {
+        id: id, proposer: proposer, target: target, amount: amount,
+    };
     return id;
 }
 
@@ -67,7 +70,7 @@ entry fn vote(id: i64, voter: Address, support: bool) -> bool {
     } else {
         book[id].no_votes = p.no_votes + power;
     }
-    emit Voted(id, voter, support, power);
+    emit Voted { id: id, voter: voter, support: support, weight: power };
     return true;
 }
 
@@ -77,7 +80,7 @@ entry fn execute(id: i64) -> bool {
     let passed = p.yes_votes > p.no_votes;
     book[id].executed = true;
     book[id].passed   = passed;
-    emit Executed(id, passed, p.yes_votes, p.no_votes);
+    emit Executed { id: id, passed: passed, yes: p.yes_votes, no: p.no_votes };
     return passed;
 }
 

@@ -563,22 +563,21 @@ impl<'a> Interp<'a> {
                 self.exec_delete(target, *span, scopes)?;
                 Ok(Flow::Normal(Value::Unit))
             }
-            Stmt::Emit { name, args, span } => {
-                if !self.module.events.iter().any(|e| &e.name == name) {
-                    return Err(Error::new(
+            Stmt::Emit { value, span } => {
+                let v = self.eval(value, scopes)?;
+                let (struct_name, fields) = match v {
+                    Value::Struct { name, fields } => (name, fields),
+                    other => return Err(Error::new(
                         ErrorKind::Runtime,
-                        format!("unknown event '{name}'"),
+                        format!("emit expected a struct value, got {other}"),
                         *span,
-                    ));
-                }
-                let mut vals = Vec::with_capacity(args.len());
-                for a in args {
-                    vals.push(self.eval(a, scopes)?);
-                }
+                    )),
+                };
+                let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
                 self.tx.borrow_mut().emit(crate::tx::EmittedEvent {
-                    module: "main".to_string(),
-                    name: name.clone(),
-                    args: vals,
+                    module: self.module.name.clone().unwrap_or_else(|| "main".to_string()),
+                    name: struct_name,
+                    args,
                 });
                 Ok(Flow::Normal(Value::Unit))
             }

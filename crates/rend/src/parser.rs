@@ -105,7 +105,6 @@ impl Parser {
         let mut states = Vec::new();
         let mut functions = Vec::new();
         let mut structs = Vec::new();
-        let mut events = Vec::new();
         let mut modifiers = Vec::new();
         let mut enums = Vec::new();
         let mut consts = Vec::new();
@@ -116,8 +115,7 @@ impl Parser {
             match self.peek_token() {
                 Token::Import => imports.push(self.parse_import()?),
                 Token::State => states.push(self.parse_state()?),
-                Token::Struct => structs.push(self.parse_struct_decl()?),
-                Token::Event => events.push(self.parse_event_decl()?),
+                Token::Struct | Token::Pub => structs.push(self.parse_struct_decl()?),
                 Token::Modifier => modifiers.push(self.parse_modifier_decl()?),
                 Token::Enum => enums.push(self.parse_enum_decl()?),
                 Token::Const => consts.push(self.parse_const_decl()?),
@@ -172,7 +170,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { name, imports, states, functions, structs, events, modifiers, enums, consts, caps, interfaces, indexes })
+        Ok(Module { name, imports, states, functions, structs, modifiers, enums, consts, caps, interfaces, indexes })
     }
 
     /// `index NAME on STATE.field1.field2;` (multi: pmap<F, [K]>) or
@@ -297,43 +295,21 @@ impl Parser {
         Ok(ModifierDecl { name, params, body, span: Span { start, end } })
     }
 
-    /// `event Foo(p1: T1, p2: T2, ...);`
-    fn parse_event_decl(&mut self) -> Result<EventDecl, Error> {
-        let start = self.cur_span().start;
-        self.expect(Token::Event, "expected 'event'")?;
-        let name = self.expect_ident()?;
-        self.expect(Token::LParen, "expected '(' after event name")?;
-        let mut params = Vec::new();
-        while !self.peek_is(&Token::RParen) {
-            let pstart = self.cur_span().start;
-            let pname = self.expect_ident()?;
-            self.expect(Token::Colon, "expected ':' after event param name")?;
-            let pty = self.parse_type()?;
-            let pend = self.cur_span().start;
-            params.push(Param {
-                name: pname,
-                ty: pty,
-                span: Span { start: pstart, end: pend },
-            });
-            if !self.peek_is(&Token::RParen) {
-                self.expect(Token::Comma, "expected ',' between event params")?;
-            }
-        }
-        self.expect(Token::RParen, "expected ')' to close event params")?;
-        let semi = self.cur_span();
-        self.expect(Token::Semi, "expected ';' after event declaration")?;
-        Ok(EventDecl { name, params, span: Span { start, end: semi.end } })
-    }
-
     fn parse_struct_decl(&mut self) -> Result<StructDecl, Error> {
         let start = self.cur_span().start;
+        let is_pub = if self.peek_is(&Token::Pub) {
+            self.advance();
+            true
+        } else {
+            false
+        };
         self.expect(Token::Struct, "expected 'struct'")?;
         let name = self.expect_ident()?;
         self.expect(Token::LBrace, "expected '{' after struct name")?;
         let fields = self.parse_struct_body_fields("struct")?;
         let close = self.cur_span();
         self.expect(Token::RBrace, "expected '}'")?;
-        Ok(StructDecl { name, fields, span: Span { start, end: close.end } })
+        Ok(StructDecl { name, fields, is_pub, span: Span { start, end: close.end } })
     }
 
     /// Parse the body of a `struct` or `cap` declaration: a sequence of
@@ -1045,23 +1021,16 @@ impl Parser {
         Ok(Stmt::Delete { target, span: Span { start, end: semi.end } })
     }
 
-    /// `emit Foo(arg, ...);`
+    /// `emit StructExpr;` — the expression must evaluate to a
+    /// `Type::Struct` value. A struct literal `Foo { ... }` is the
+    /// usual spelling; a variable that holds a struct also works.
     fn parse_emit(&mut self) -> Result<Stmt, Error> {
         let start = self.cur_span().start;
         self.expect(Token::Emit, "expected 'emit'")?;
-        let name = self.expect_ident()?;
-        self.expect(Token::LParen, "expected '(' after event name")?;
-        let mut args = Vec::new();
-        while !self.peek_is(&Token::RParen) {
-            args.push(self.parse_expr()?);
-            if !self.peek_is(&Token::RParen) {
-                self.expect(Token::Comma, "expected ',' between emit args")?;
-            }
-        }
-        self.expect(Token::RParen, "expected ')' to close emit")?;
+        let value = self.parse_expr()?;
         let semi = self.cur_span();
         self.expect(Token::Semi, "expected ';' after emit statement")?;
-        Ok(Stmt::Emit { name, args, span: Span { start, end: semi.end } })
+        Ok(Stmt::Emit { value: Box::new(value), span: Span { start, end: semi.end } })
     }
 
     fn parse_let(&mut self) -> Result<Stmt, Error> {

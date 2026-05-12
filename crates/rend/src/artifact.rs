@@ -37,7 +37,7 @@ use std::collections::HashMap;
 
 use crate::ast::{BinOp, Type, UnOp};
 use crate::bc::{
-    BcFn, BcModule, Const, EnumShape, EventShape, Instr, PathSpec, ReadOp, StructShape,
+    BcFn, BcModule, Const, EnumShape, Instr, PathSpec, ReadOp, StructShape,
 };
 use crate::error::{Error, ErrorKind};
 use crate::token::Span;
@@ -214,12 +214,6 @@ fn write_module(out: &mut Vec<u8>, m: &BcModule) {
         write_type(out, &p.leaf_type);
         out.push(if p.is_blob { 1 } else { 0 });
     }
-    write_u32(out, m.events.len() as u32);
-    for e in &m.events {
-        write_str(out, &e.name);
-        write_u32(out, e.param_names.len() as u32);
-        for p in &e.param_names { write_str(out, p); }
-    }
     write_u32(out, m.enum_shapes.len() as u32);
     for e in &m.enum_shapes {
         write_str(out, &e.name);
@@ -305,17 +299,6 @@ fn read_module(r: &mut Reader) -> Result<BcModule, Error> {
             is_blob: r.read_u8()? != 0,
         });
     }
-    let n_events = r.read_u32()? as usize;
-    let mut events = Vec::with_capacity(n_events);
-    let mut event_index = HashMap::with_capacity(n_events);
-    for i in 0..n_events {
-        let name = read_str(r)?;
-        let np = r.read_u32()? as usize;
-        let mut params = Vec::with_capacity(np);
-        for _ in 0..np { params.push(read_str(r)?); }
-        event_index.insert(name.clone(), i);
-        events.push(EventShape { name, param_names: params });
-    }
     let n_enums = r.read_u32()? as usize;
     let mut enum_shapes = Vec::with_capacity(n_enums);
     let mut enum_index = HashMap::with_capacity(n_enums);
@@ -366,7 +349,6 @@ fn read_module(r: &mut Reader) -> Result<BcModule, Error> {
         struct_shapes, struct_index,
         functions, fn_index,
         path_specs,
-        events, event_index,
         enum_shapes, enum_index,
         interfaces, interface_index,
     })
@@ -945,8 +927,8 @@ fn write_instr(out: &mut Vec<u8>, instr: &Instr) {
         Instr::PrefetchMap { arr_reg, state_idx } => {
             out.push(op::PREFETCH_MAP); write_u16(out, *arr_reg); write_u16(out, *state_idx);
         }
-        Instr::Emit { event_idx, args_start, n_args } => {
-            out.push(op::EMIT); write_u16(out, *event_idx); write_u16(out, *args_start); out.push(*n_args);
+        Instr::Emit { value } => {
+            out.push(op::EMIT); write_u16(out, *value);
         }
         Instr::Context { dst, kind } => { out.push(op::CONTEXT); write_u16(out, *dst); out.push(*kind); }
         Instr::MakeTuple { dst, args_start, n } => {
@@ -1162,7 +1144,7 @@ fn read_instr(r: &mut Reader) -> Result<Instr, Error> {
         op::KV_PUT_PATH => Instr::KvPutPath  { src: r.read_u16()?, path_idx: r.read_u16()? },
         op::READ_BATCH  => Instr::ReadBatch  { group_idx: r.read_u16()? },
         op::PREFETCH_MAP => Instr::PrefetchMap { arr_reg: r.read_u16()?, state_idx: r.read_u16()? },
-        op::EMIT => Instr::Emit { event_idx: r.read_u16()?, args_start: r.read_u16()?, n_args: r.read_u8()? },
+        op::EMIT => Instr::Emit { value: r.read_u16()? },
         op::CONTEXT => Instr::Context { dst: r.read_u16()?, kind: r.read_u8()? },
         op::MAKE_TUPLE => Instr::MakeTuple { dst: r.read_u16()?, args_start: r.read_u16()?, n: r.read_u16()? },
         op::TUPLE_GET  => Instr::TupleGet  { dst: r.read_u16()?, src: r.read_u16()?, index: r.read_u16()? },
@@ -1350,7 +1332,6 @@ mod tests {
             }
         }
         assert_eq!(a.struct_shapes.len(), b.struct_shapes.len());
-        assert_eq!(a.events.len(), b.events.len());
         assert_eq!(a.enum_shapes.len(), b.enum_shapes.len());
     }
 

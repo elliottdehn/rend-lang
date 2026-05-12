@@ -160,10 +160,10 @@ fn scan_stmt(
         }
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Placeholder(_) => {}
         Stmt::Expr(e) => scan_expr(e, iter_var, states, summaries, found, seen),
-        Stmt::Emit { args, .. } => {
-            // emit args may carry iter-var-keyed reads; scan them so
-            // those reads still feed loop prefetching.
-            for a in args { scan_expr(a, iter_var, states, summaries, found, seen); }
+        Stmt::Emit { value, .. } => {
+            // The emitted struct value may carry iter-var-keyed reads;
+            // scan it so those reads still feed loop prefetching.
+            scan_expr(value, iter_var, states, summaries, found, seen);
         }
         Stmt::Delete { target, .. } => {
             scan_expr(target, iter_var, states, summaries, found, seen);

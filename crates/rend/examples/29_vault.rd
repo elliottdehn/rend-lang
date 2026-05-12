@@ -44,10 +44,12 @@ struct Meta {
 state meta:      Meta;
 state positions: map<i64, Position>;
 
-event Deposited(id: i64, owner: Address, amount: u64, unlocks_at: u64);
-event Withdrawn(id: i64, owner: Address, amount: u64);
-event PauseToggled(by: Address, paused: bool);
-event ProofIssued(id: i64, proof: bytes);
+// Events are just structs; `emit Foo { ... }` logs the value with
+// the emitting module's name attached.
+struct Deposited    { id: i64, owner: Address, amount: u64, unlocks_at: u64 }
+struct Withdrawn    { id: i64, owner: Address, amount: u64 }
+struct PauseToggled { by: Address, paused: bool }
+struct ProofIssued  { id: i64, proof: bytes }
 
 // ---------- modifiers ----------
 
@@ -77,12 +79,12 @@ entry fn init(admin: Address) {
 
 entry fn pause() [OnlyAdmin] {
     meta.paused = true;
-    emit PauseToggled(msg_sender(), true);
+    emit PauseToggled { by: msg_sender(), paused: true };
 }
 
 entry fn unpause() [OnlyAdmin] {
     meta.paused = false;
-    emit PauseToggled(msg_sender(), false);
+    emit PauseToggled { by: msg_sender(), paused: false };
 }
 
 // ---------- depositor surface ----------
@@ -104,7 +106,12 @@ nore entry fn deposit(amount: u64, lock_duration: u64)
         redeemed:   false,
     };
     meta.total = meta.total + amount;
-    emit Deposited(id, msg_sender(), amount, unlocks_at);
+    emit Deposited {
+        id: id,
+        owner: msg_sender(),
+        amount: amount,
+        unlocks_at: unlocks_at,
+    };
     return id;
 }
 
@@ -118,7 +125,7 @@ nore entry fn withdraw(id: i64) -> u64 {
     // whole Position, FieldSets `redeemed`, writes back.
     positions[id].redeemed = true;
     meta.total = meta.total - p.amount;
-    emit Withdrawn(id, msg_sender(), p.amount);
+    emit Withdrawn { id: id, owner: msg_sender(), amount: p.amount };
     return p.amount;
 }
 
@@ -145,7 +152,7 @@ entry fn issue_proof(id: i64) -> bytes {
     let header = to_bytes("vault-proof-v1:");
     let label  = to_bytes("position");
     let proof  = bytes_concat(header, label);
-    emit ProofIssued(id, proof);
+    emit ProofIssued { id: id, proof: proof };
     return proof;
 }
 

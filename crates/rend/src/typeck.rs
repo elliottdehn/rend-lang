@@ -171,11 +171,6 @@ pub fn resolve_types_with_iface_externals(
         }
         imp.return_type = resolve_one_with_enums(&imp.return_type, &struct_map, &enum_map, &cap_map, &iface_map, imp.span)?;
     }
-    for ev in module.events.iter_mut() {
-        for p in ev.params.iter_mut() {
-            p.ty = resolve_one_with_enums(&p.ty, &struct_map, &enum_map, &cap_map, &iface_map, p.span)?;
-        }
-    }
     for c in module.consts.iter_mut() {
         c.ty = resolve_one_with_enums(&c.ty, &struct_map, &enum_map, &cap_map, &iface_map, c.span)?;
     }
@@ -492,9 +487,9 @@ fn annotate_stmt(
             scopes.pop();
         }
         Stmt::Expr(e) => annotate_expr(e, scopes, state_types, ifaces),
-        Stmt::Emit { args, .. } => for a in args.iter_mut() {
-            annotate_expr(a, scopes, state_types, ifaces);
-        },
+        Stmt::Emit { value, .. } => {
+            annotate_expr(value, scopes, state_types, ifaces);
+        }
         Stmt::Delete { target, .. } => {
             annotate_expr(target, scopes, state_types, ifaces);
         }
@@ -710,10 +705,6 @@ struct TypeChecker {
     /// `Type::Struct` value from a literal so the type matches the
     /// declaration's storage shape and `==` succeeds on assignment.
     struct_groups: HashMap<String, Vec<Option<String>>>,
-    /// Event name → declared parameter types in order. Emits validate
-    /// against this map; events are module-private (no cross-module
-    /// emit syntax).
-    events: HashMap<String, Vec<Type>>,
     /// Enum name → ordered (variant_name, payload_types). Used by
     /// constructors and match-arm validation.
     enums: HashMap<String, Vec<(String, Vec<Type>)>>,
@@ -991,21 +982,6 @@ fn check_inner(
         module_fn_entry.insert(f.name.clone(), f.is_entry);
     }
 
-    let mut events: HashMap<String, Vec<Type>> = HashMap::new();
-    for ev in &module.events {
-        if events.contains_key(&ev.name) {
-            return Err(Error::new(
-                ErrorKind::Type,
-                format!("duplicate event '{}'", ev.name),
-                ev.span,
-            ));
-        }
-        events.insert(
-            ev.name.clone(),
-            ev.params.iter().map(|p| p.ty.clone()).collect(),
-        );
-    }
-
     let mut enums: HashMap<String, Vec<(String, Vec<Type>)>> = HashMap::new();
     for en in &module.enums {
         if enums.contains_key(&en.name) {
@@ -1076,7 +1052,6 @@ fn check_inner(
         states,
         structs,
         struct_groups,
-        events,
         enums,
         consts,
         caps,
@@ -1402,36 +1377,17 @@ impl TypeChecker {
                 }
                 Ok(false)
             }
-            Stmt::Emit { name, args, span } => {
-                let param_tys = self.events.get(name).cloned().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Type,
-                        format!("unknown event '{name}' (declare with `event {name}(...);`)"),
-                        *span,
-                    )
-                })?;
-                if param_tys.len() != args.len() {
+            Stmt::Emit { value, span: _ } => {
+                // The expression must evaluate to a struct value; the
+                // struct's name + the emitting module form the event
+                // identity used by the handler dispatch table.
+                let ty = self.check_expr(value, env)?;
+                if !matches!(ty, Type::Struct { .. }) {
                     return Err(Error::new(
                         ErrorKind::Type,
-                        format!(
-                            "event '{name}' declares {} param(s); emit provides {}",
-                            param_tys.len(),
-                            args.len()
-                        ),
-                        *span,
+                        format!("emit requires a struct value, got {ty}"),
+                        value.span,
                     ));
-                }
-                for (i, (a, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
-                    let actual = self.check_expr(a, env)?;
-                    if !types_compatible(&actual, expected) {
-                        return Err(Error::new(
-                            ErrorKind::Type,
-                            format!(
-                                "event '{name}' arg {i}: expected {expected}, got {actual}",
-                            ),
-                            a.span,
-                        ));
-                    }
                 }
                 Ok(false)
             }

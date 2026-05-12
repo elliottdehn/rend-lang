@@ -74,14 +74,14 @@ fn token_burn_more_than_balance_aborts_with_assert() {
         state total_supply: u64;
         state balances: map<Address, u64>;
         state allowances: map<AllowanceKey, u64>;
-        event Transfer(from: Address, to: Address, amount: u64);
-        event Approval(owner: Address, spender: Address, amount: u64);
-        event Mint(to: Address, amount: u64);
-        event Burn(from: Address, amount: u64);
+        struct Transfer { from: Address, to: Address, amount: u64 }
+        struct Approval { owner: Address, spender: Address, amount: u64 }
+        struct Mint     { to: Address, amount: u64 }
+        struct Burn     { from: Address, amount: u64 }
         entry fn mint(to: Address, amount: u64) -> bool {
             balances[to] = balances[to] + amount;
             total_supply = total_supply + amount;
-            emit Mint(to, amount);
+            emit Mint { to: to, amount: amount };
             return true;
         }
         entry fn burn(from: Address, amount: u64) -> bool {
@@ -89,7 +89,7 @@ fn token_burn_more_than_balance_aborts_with_assert() {
             assert(b >= amount, "insufficient balance");
             balances[from] = b - amount;
             total_supply   = total_supply - amount;
-            emit Burn(from, amount);
+            emit Burn { from: from, amount: amount };
             return true;
         }
         fn main() -> u64 {

@@ -172,12 +172,12 @@ fn modifier_emits_event_around_body() {
     let kv = rend::kv::InMemoryKv::new();
     let src = "
         state result: i64;
-        event Entered(name: string);
-        event Exited(name: string);
+        struct Entered { name: string }
+        struct Exited  { name: string }
         modifier Trace() {
-            emit Entered(\"op\");
+            emit Entered { name: \"op\" };
             _;
-            emit Exited(\"op\");
+            emit Exited { name: \"op\" };
         }
         entry fn op() [Trace] { result = 7; }
         fn main() -> i64 {

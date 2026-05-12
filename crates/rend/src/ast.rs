@@ -13,7 +13,6 @@ pub struct Module {
     pub states: Vec<StateDecl>,
     pub functions: Vec<FnDef>,
     pub structs: Vec<StructDecl>,
-    pub events: Vec<EventDecl>,
     pub modifiers: Vec<ModifierDecl>,
     pub enums: Vec<EnumDecl>,
     pub consts: Vec<ConstDecl>,
@@ -107,21 +106,14 @@ pub struct ModifierDecl {
     pub span: Span,
 }
 
-/// Declares an event the module can emit. Solidity-style: name plus
-/// typed parameters. Emissions accumulate in a per-tx log returned in
-/// `ExecOutcome::events`; the module scopes the event name (a host
-/// reading the log sees `module::EventName`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EventDecl {
-    pub name: String,
-    pub params: Vec<Param>,
-    pub span: Span,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     pub name: String,
     pub fields: Vec<StructField>,
+    /// `pub struct Foo { ... }` — marks the struct as referenceable
+    /// from other modules via `m::Foo`. Bare `struct` is private:
+    /// any cross-module reference fails typeck. Defaults to `false`.
+    pub is_pub: bool,
     pub span: Span,
 }
 
@@ -479,9 +471,11 @@ pub enum Stmt {
     Break(Span),
     Continue(Span),
     Expr(Expr),
-    /// `emit Foo(arg1, arg2);` — append a record to the tx event log.
-    /// `name` must resolve to an `EventDecl` in the same module.
-    Emit { name: String, args: Vec<Expr>, span: Span },
+    /// `emit StructExpr;` — append the struct value to the tx event
+    /// log and queue it for `on <Type>` handlers. Any expression
+    /// resolving to a `Type::Struct` value is legal; a struct
+    /// literal `Foo { ... }` is the common spelling.
+    Emit { value: Box<Expr>, span: Span },
     /// `delete state[k];` — remove an entry from a `pmap` or
     /// `pbtree` state. The target must be an indexed expression on
     /// a state slot. Index back-links are auto-cleaned by the

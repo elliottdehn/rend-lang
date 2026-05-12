@@ -319,7 +319,7 @@ impl<'a> Lexer<'a> {
             "struct" => Token::Struct,
             "group" => Token::Group,
             "module" => Token::Module,
-            "event" => Token::Event,
+            "pub" => Token::Pub,
             "emit" => Token::Emit,
             "nore" => Token::Nore,
             "modifier" => Token::Modifier,

@@ -103,15 +103,6 @@ pub fn compile_named_with_extras(
         .map(|s| (s.name.clone(), s.ty.clone()))
         .collect();
     let summaries = crate::prefetch::summarize_fns(module, &states_by_name);
-    let mut events = Vec::with_capacity(module.events.len());
-    let mut event_index = HashMap::new();
-    for (i, ev) in module.events.iter().enumerate() {
-        events.push(crate::bc::EventShape {
-            name: ev.name.clone(),
-            param_names: ev.params.iter().map(|p| p.name.clone()).collect(),
-        });
-        event_index.insert(ev.name.clone(), i);
-    }
     let mut enum_shapes = Vec::with_capacity(module.enums.len());
     let mut enum_index = HashMap::new();
     for (i, en) in module.enums.iter().enumerate() {
@@ -161,7 +152,6 @@ pub fn compile_named_with_extras(
             &mut path_index,
             &states_by_name,
             &summaries,
-            &event_index,
             &enum_index,
             &enum_shapes,
             &iface_index,
@@ -190,8 +180,6 @@ pub fn compile_named_with_extras(
         functions: bc_fns,
         fn_index,
         path_specs,
-        events,
-        event_index,
         enum_shapes,
         enum_index,
         interfaces,
@@ -216,7 +204,6 @@ fn compile_fn<'a>(
     path_index: &'a mut HashMap<(u16, Vec<String>), u16>,
     states_by_name: &'a HashMap<String, Type>,
     summaries: &'a FnSummaries,
-    event_index: &'a HashMap<String, usize>,
     enum_index: &'a HashMap<String, usize>,
     enum_shapes: &'a [crate::bc::EnumShape],
     iface_index: &'a std::collections::HashSet<String>,
@@ -237,7 +224,6 @@ fn compile_fn<'a>(
         path_index,
         states_by_name,
         summaries,
-        event_index,
         enum_index,
         enum_shapes,
         iface_index,
@@ -287,7 +273,6 @@ struct FnCompiler<'a> {
     path_index: &'a mut HashMap<(u16, Vec<String>), u16>,
     states_by_name: &'a HashMap<String, Type>,
     summaries: &'a FnSummaries,
-    event_index: &'a HashMap<String, usize>,
     enum_index: &'a HashMap<String, usize>,
     enum_shapes: &'a [crate::bc::EnumShape],
     /// Set of interface names declared in the module — used to
@@ -624,25 +609,15 @@ impl<'a> FnCompiler<'a> {
             Stmt::Delete { target, span } => {
                 self.compile_delete(target, *span)
             }
-            Stmt::Emit { name, args, span } => {
-                let event_idx = *self.event_index.get(name).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Type,
-                        format!("unknown event '{name}'"),
-                        *span,
-                    )
-                })?;
-                let args_start = self.next_reg;
-                for _ in 0..args.len() { self.alloc(); }
-                for (i, a) in args.iter().enumerate() {
-                    self.compile_expr_into(a, args_start + i as u16)?;
-                }
-                self.code.push(Instr::Emit {
-                    event_idx: event_idx as u16,
-                    args_start,
-                    n_args: args.len() as u8,
-                });
-                for _ in 0..args.len() { self.next_reg -= 1; }
+            Stmt::Emit { value, span: _ } => {
+                // Compile the struct expression into a register; the
+                // VM unpacks its name + fields at runtime. Typeck has
+                // already verified the expression's type is a struct,
+                // so this can't degrade to "emit a primitive."
+                let r = self.alloc();
+                self.compile_expr_into(value, r)?;
+                self.code.push(Instr::Emit { value: r });
+                self.free(r);
                 Ok(())
             }
             Stmt::LetTuple { names, value, .. } => {

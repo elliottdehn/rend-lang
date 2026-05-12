@@ -786,19 +786,24 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                         )),
                     };
                 }
-                Instr::Emit { event_idx, args_start, n_args } => {
-                    // Force every arg fully — the host receives
-                    // concrete values, never Pending handles. Stamp
-                    // the entry with the *executing* module's name so
-                    // cross-module callers see who emitted what.
-                    let shape = &module.events[event_idx as usize];
-                    let mut args: Vec<Value> = Vec::with_capacity(n_args as usize);
-                    for i in 0..n_args {
-                        args.push(self.force_reg(&mut regs, args_start + i as u16));
-                    }
+                Instr::Emit { value } => {
+                    // Force the struct value fully, then split it
+                    // into (name, fields) for the emit log. Typeck
+                    // guarantees the value is a Value::Struct; anything
+                    // else is a runtime invariant violation.
+                    let v = self.force_reg(&mut regs, value);
+                    let (struct_name, fields) = match v {
+                        Value::Struct { name, fields } => (name, fields),
+                        other => return Err(Error::new(
+                            ErrorKind::Runtime,
+                            format!("emit expected a struct value, got {other}"),
+                            Span::default(),
+                        )),
+                    };
+                    let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
                     self.tx.emit(crate::tx::EmittedEvent {
                         module: module.name.clone(),
-                        name: shape.name.clone(),
+                        name: struct_name,
                         args,
                     });
                 }

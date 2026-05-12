@@ -266,14 +266,14 @@ fn classify_stmt(stmt: &Stmt, acc: &mut EffectClass, ctx: &Ctx) {
             *acc = acc.join(EffectClass::WriteOnly);
             classify_expr(target, acc, ctx);
         }
-        Stmt::Emit { args, .. } => {
-            // Emitting an event is an observable side-effect — it
-            // shows up in the host's event log. Joining `WriteOnly`
-            // here means a `view` or `pure` fn that emits will fail
-            // verification, which matches user intuition: a "read"
-            // shouldn't write to the log either.
+        Stmt::Emit { value, .. } => {
+            // Emitting is an observable side-effect: it adds to the
+            // event log and may dispatch handlers later in the
+            // commit. Joining `WriteOnly` here means a `view` or
+            // `pure` fn that emits will fail verification, which
+            // matches user intuition.
             *acc = acc.join(EffectClass::WriteOnly);
-            for a in args { classify_expr(a, acc, ctx); }
+            classify_expr(value, acc, ctx);
         }
         Stmt::LetTuple { value, .. } => classify_expr(value, acc, ctx),
     }

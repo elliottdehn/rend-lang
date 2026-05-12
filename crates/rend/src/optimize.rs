@@ -250,9 +250,7 @@ fn reads_pending_dst(instr: &Instr, pending: &HashSet<u16>) -> bool {
         Instr::BuiltinLen { src, .. } => srcs.push(*src),
         Instr::ReadBatch { .. } => {}
         Instr::PrefetchMap { arr_reg, .. } => srcs.push(*arr_reg),
-        Instr::Emit { args_start, n_args, .. } => {
-            for i in 0..*n_args { srcs.push(args_start + i as u16); }
-        }
+        Instr::Emit { value } => srcs.push(*value),
         Instr::Context { .. } => {}
         Instr::MakeTuple { args_start, n, .. } => {
             for i in 0..*n { srcs.push(args_start + i); }

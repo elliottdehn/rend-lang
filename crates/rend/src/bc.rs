@@ -25,11 +25,6 @@ pub struct BcModule {
     /// Each path is `(state_idx, [field_names])`; the resolved leaf key and
     /// type are baked in so the VM can issue a single granular cell access.
     pub path_specs: Vec<PathSpec>,
-    /// Declared events. The VM's `Emit` instruction references one of
-    /// these by index; the runtime stamps each emission with the
-    /// module name so the host log records `module::EventName`.
-    pub events: Vec<EventShape>,
-    pub event_index: HashMap<String, usize>,
     pub enum_shapes: Vec<EnumShape>,
     pub enum_index: HashMap<String, usize>,
     /// Interface declarations carried in the artifact so a tx
@@ -38,15 +33,6 @@ pub struct BcModule {
     /// `IERC20` was declared in this module).
     pub interfaces: Vec<crate::ast::InterfaceDecl>,
     pub interface_index: HashMap<String, usize>,
-}
-
-/// Bytecode-side description of an event: name + ordered param names.
-/// Param types live in the AST EventDecl, not here, since at runtime
-/// we don't need to type-check (typeck already validated).
-#[derive(Debug, Clone)]
-pub struct EventShape {
-    pub name: String,
-    pub param_names: Vec<String>,
 }
 
 /// Pre-computed descriptor for a state field path. The compiler walks the
@@ -250,7 +236,12 @@ pub enum Instr {
     /// `emit Foo(arg1, arg2);` — append an entry to the tx event log.
     /// Forces every arg (the host receives concrete values) and
     /// stamps the entry with the current module's name.
-    Emit { event_idx: u16, args_start: u16, n_args: u8 },
+    /// Emit the struct value held in `value` as an event. The
+    /// struct's name + the executing module's name form the event
+    /// identity used to look up handlers. The VM serializes the
+    /// fields out of the Value::Struct at execution time, so this
+    /// instruction needs no static event-shape table.
+    Emit { value: u16 },
     /// Read a tx-context field. `kind`: 0 = msg_sender (Address),
     /// 1 = block_timestamp (u64), 2 = block_number (u64).
     Context { dst: u16, kind: u8 },
