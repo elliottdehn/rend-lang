@@ -72,6 +72,31 @@ fn example_48_multi_symbol_order_book_uses_three_field_composite() {
 }
 
 #[test]
+fn example_50_string_dedup_uses_disjoint_pmap_plus_parallel_batch_path() {
+    // Interning maps each distinct string to a fresh u64 id.
+    // `forward: pmap<string, u64>` is HAMT-disjoint per key, so
+    // distinct strings never fence each other at the storage layer.
+    // The only intentionally-contended cell is `next_id`; the batch
+    // path bumps it once outside `parallel { }` and the two
+    // pre-allocated slots let the legs run uncontested.
+    //
+    // Trace:
+    //   intern("alpha") → 1
+    //   intern("beta")  → 2
+    //   intern("alpha") → 1 (dedup hit)
+    //   parallel { intern_at("gamma", 3); intern_at("delta", 4) }
+    //                   → ids 3, 4 (both fresh, disjoint cells)
+    //   intern(lookup(1)) → 1 (round-trip via reverse map)
+    //
+    // Encoded positional digits:
+    //   highwater(4) a1(1) b(2) g(3) d(4) a2(1) a3(1) dedup(1) rt(1)
+    //   = 412_341_111.
+    let src = std::fs::read_to_string("examples/50_string_dedup.rd").unwrap();
+    let out = rend::run(&src).unwrap();
+    assert_eq!(out, Value::U64(412_341_111));
+}
+
+#[test]
 fn example_49_frequent_batch_auction_uncrosses_at_volume_max_price() {
     // FBA: no time priority — orders sit in a pending tick, then
     // `commit_tick` finds the clearing price P* that maximizes
