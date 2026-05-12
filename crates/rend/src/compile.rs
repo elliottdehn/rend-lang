@@ -91,6 +91,9 @@ pub fn compile_named_with_extras(
         });
         struct_index.insert(c.name.clone(), i);
     }
+    // Handler fns live in `module.functions` (the parser lowered
+    // them there) so a single `fn_index` covers both regular and
+    // handler fns. The dispatch table below uses these indices.
     let mut fn_index = HashMap::new();
     for (i, f) in module.functions.iter().enumerate() {
         fn_index.insert(f.name.clone(), i);
@@ -160,6 +163,22 @@ pub fn compile_named_with_extras(
             &indexes_by_primary,
         )?);
     }
+    // Build dispatch table: event struct name → declaration-ordered
+    // list of handler fn indices. The handlers' fn_defs already
+    // exist in `bc_fns` (the parser merged them into
+    // `module.functions`), so we just resolve each by name.
+    let mut handler_dispatch: HashMap<String, Vec<u16>> = HashMap::new();
+    for h in &module.handlers {
+        let idx = *fn_index.get(&h.fn_def.name).ok_or_else(|| Error::new(
+            ErrorKind::Type,
+            format!("handler '{}' missing from fn index (internal)", h.fn_def.name),
+            h.span,
+        ))?;
+        handler_dispatch
+            .entry(h.event_type.clone())
+            .or_default()
+            .push(idx as u16);
+    }
     let interfaces = module.interfaces.clone();
     let interface_index = interfaces
         .iter()
@@ -180,6 +199,7 @@ pub fn compile_named_with_extras(
         functions: bc_fns,
         fn_index,
         path_specs,
+        handler_dispatch,
         enum_shapes,
         enum_index,
         interfaces,

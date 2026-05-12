@@ -165,6 +165,9 @@ pub fn resolve_types_with_iface_externals(
         f.return_type = resolve_one_with_enums(&f.return_type, &struct_map, &enum_map, &cap_map, &iface_map, f.span)?;
         resolve_block_with_enums(&mut f.body, &struct_map, &enum_map, &cap_map, &iface_map)?;
     }
+    // Handler fn_defs live in `module.functions` (see parser) so the
+    // loop above already resolved their bodies. The standalone
+    // entries in `module.handlers` are only the dispatch table.
     for imp in module.imports.iter_mut() {
         for p in imp.params.iter_mut() {
             *p = resolve_one_with_enums(p, &struct_map, &enum_map, &cap_map, &iface_map, imp.span)?;
@@ -1080,6 +1083,56 @@ fn check_inner(
     for f in &module.functions {
         tc.check_fn(f)?;
     }
+    // Handler fn bodies were already checked above (they live in
+    // `module.functions`). Here we additionally validate the
+    // handler-specific signature shape: exactly one parameter, whose
+    // type is the struct named by `on <Type>`.
+    for h in &module.handlers {
+        if h.fn_def.params.len() != 1 {
+            return Err(Error::new(
+                ErrorKind::Type,
+                format!(
+                    "handler '{}' on '{}' must take exactly one parameter (the event struct)",
+                    h.fn_def.name, h.event_type,
+                ),
+                h.span,
+            ));
+        }
+        // The parser parsed the handler before lowering it into
+        // `functions`, so its types haven't been resolved yet
+        // through the type-resolution pass. Pull the resolved
+        // version from `module.functions` and validate against
+        // *that* — the unresolved form still has `fields: []`.
+        let resolved = module
+            .functions
+            .iter()
+            .find(|f| f.name == h.fn_def.name)
+            .expect("handler fn was lowered into functions");
+        let param_ty = &resolved.params[0].ty;
+        let event_struct_name = match param_ty {
+            Type::Struct { name, .. } => name.clone(),
+            other => {
+                return Err(Error::new(
+                    ErrorKind::Type,
+                    format!(
+                        "handler '{}' on '{}': parameter type must be a struct, got {other}",
+                        h.fn_def.name, h.event_type,
+                    ),
+                    resolved.params[0].span,
+                ));
+            }
+        };
+        if event_struct_name != h.event_type {
+            return Err(Error::new(
+                ErrorKind::Type,
+                format!(
+                    "handler '{}' on '{}': parameter type '{}' must match the event type",
+                    h.fn_def.name, h.event_type, event_struct_name,
+                ),
+                resolved.params[0].span,
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1114,6 +1167,8 @@ fn run_sigs(module: &Module) -> Result<HashMap<String, FnSig>, Error> {
             },
         );
     }
+    // Handler fns are already in `module.functions` (parser lowered
+    // them there), so they get a sig entry via the loop above.
     Ok(sigs)
 }
 

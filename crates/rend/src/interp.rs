@@ -565,6 +565,7 @@ impl<'a> Interp<'a> {
             }
             Stmt::Emit { value, span } => {
                 let v = self.eval(value, scopes)?;
+                let struct_val = v.clone();
                 let (struct_name, fields) = match v {
                     Value::Struct { name, fields } => (name, fields),
                     other => return Err(Error::new(
@@ -576,9 +577,24 @@ impl<'a> Interp<'a> {
                 let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
                 self.tx.borrow_mut().emit(crate::tx::EmittedEvent {
                     module: self.module.name.clone().unwrap_or_else(|| "main".to_string()),
-                    name: struct_name,
+                    name: struct_name.clone(),
                     args,
                 });
+                // Dispatch handlers bound to this struct type in
+                // declaration order. Handlers recurse through the
+                // same Stmt::Emit if they emit more events, so
+                // chains and cycles fall out naturally (cycles end
+                // when fuel runs out).
+                let handler_names: Vec<String> = self
+                    .module
+                    .handlers
+                    .iter()
+                    .filter(|h| h.event_type == struct_name)
+                    .map(|h| h.fn_def.name.clone())
+                    .collect();
+                for hname in handler_names {
+                    let _ = self.call(&hname, vec![struct_val.clone()])?;
+                }
                 Ok(Flow::Normal(Value::Unit))
             }
             Stmt::LetTuple { names, value, span } => {

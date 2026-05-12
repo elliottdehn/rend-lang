@@ -111,6 +111,7 @@ impl Parser {
         let mut caps = Vec::new();
         let mut interfaces = Vec::new();
         let mut indexes = Vec::new();
+        let mut handlers = Vec::new();
         while !self.is_eof() {
             match self.peek_token() {
                 Token::Import => imports.push(self.parse_import()?),
@@ -123,6 +124,7 @@ impl Parser {
                 Token::Interface => interfaces.push(self.parse_interface_decl()?),
                 Token::Index => indexes.push(self.parse_index_decl(IndexKind::Multi)?),
                 Token::UniqueIndex => indexes.push(self.parse_index_decl(IndexKind::Unique)?),
+                Token::On => handlers.push(self.parse_handler_decl()?),
                 Token::Entry | Token::Nore | Token::View | Token::Pure => {
                     let mut is_entry = false;
                     let mut is_nore = false;
@@ -170,7 +172,14 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { name, imports, states, functions, structs, modifiers, enums, consts, caps, interfaces, indexes })
+        // Handlers compile like ordinary fns; lower their fn_defs
+        // into `functions` so every downstream pass (typeck, interp,
+        // compile) discovers them through the same name lookup.
+        // `handlers` itself stays as the dispatch table source.
+        for h in &handlers {
+            functions.push(h.fn_def.clone());
+        }
+        Ok(Module { name, imports, states, functions, structs, handlers, modifiers, enums, consts, caps, interfaces, indexes })
     }
 
     /// `index NAME on STATE.field1.field2;` (multi: pmap<F, [K]>) or
@@ -293,6 +302,22 @@ impl Parser {
         let body = self.parse_block()?;
         let end = body.span.end;
         Ok(ModifierDecl { name, params, body, span: Span { start, end } })
+    }
+
+    /// `on TypeName fn handler(p: TypeName) { body }` — event
+    /// handler binding. Compiles to a regular `FnDef` plus a
+    /// pointer back to the event struct it listens for.
+    fn parse_handler_decl(&mut self) -> Result<HandlerDecl, Error> {
+        let start = self.cur_span().start;
+        self.expect(Token::On, "expected 'on'")?;
+        let event_type = self.expect_ident()?;
+        let fn_def = self.parse_fn()?;
+        let end = fn_def.span.end;
+        Ok(HandlerDecl {
+            event_type,
+            fn_def,
+            span: Span { start, end },
+        })
     }
 
     fn parse_struct_decl(&mut self) -> Result<StructDecl, Error> {

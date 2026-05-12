@@ -792,6 +792,7 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     // guarantees the value is a Value::Struct; anything
                     // else is a runtime invariant violation.
                     let v = self.force_reg(&mut regs, value);
+                    let struct_val = v.clone();
                     let (struct_name, fields) = match v {
                         Value::Struct { name, fields } => (name, fields),
                         other => return Err(Error::new(
@@ -803,9 +804,26 @@ impl<'a, 'tx> VmState<'a, 'tx> {
                     let args: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
                     self.tx.emit(crate::tx::EmittedEvent {
                         module: module.name.clone(),
-                        name: struct_name,
+                        name: struct_name.clone(),
                         args,
                     });
+                    // Dispatch every handler bound to this struct.
+                    // Handlers run inline in stable declaration order;
+                    // any emits they make recurse through this same
+                    // instruction, so chains and cycles fall out
+                    // naturally (cycles are bounded by fuel).
+                    let handlers = module
+                        .handler_dispatch
+                        .get(&struct_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    for h_idx in handlers {
+                        let _ = self.call(
+                            module_idx,
+                            h_idx as usize,
+                            &[struct_val.clone()],
+                        )?;
+                    }
                 }
                 Instr::ReadBatch { group_idx } => {
                     let group = &f.read_groups[group_idx as usize];

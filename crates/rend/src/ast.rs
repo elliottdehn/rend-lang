@@ -13,6 +13,11 @@ pub struct Module {
     pub states: Vec<StateDecl>,
     pub functions: Vec<FnDef>,
     pub structs: Vec<StructDecl>,
+    /// `on Type fn name(e: Type) { ... }` event handlers declared at
+    /// module top level. Each handler runs whenever the matching
+    /// struct is emitted (anywhere in the loaded program); the
+    /// scheduler drains them in declaration order at commit time.
+    pub handlers: Vec<HandlerDecl>,
     pub modifiers: Vec<ModifierDecl>,
     pub enums: Vec<EnumDecl>,
     pub consts: Vec<ConstDecl>,
@@ -114,6 +119,21 @@ pub struct StructDecl {
     /// from other modules via `m::Foo`. Bare `struct` is private:
     /// any cross-module reference fails typeck. Defaults to `false`.
     pub is_pub: bool,
+    pub span: Span,
+}
+
+/// `on Foo fn handler(e: Foo) { ... }` — declares an event handler.
+/// At commit time, every emitted `Foo` value is fed to this fn (and
+/// every other handler bound to `Foo`) in stable declaration order.
+/// The fn itself is an ordinary `FnDef` with a single parameter
+/// whose type is the event struct; typeck enforces the shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerDecl {
+    /// The struct name this handler listens for. Bare `Foo` means
+    /// "the local `Foo`"; `m::Foo` (future cross-module slice) means
+    /// module `m`'s `Foo`. Today only the bare form is parsed.
+    pub event_type: String,
+    pub fn_def: FnDef,
     pub span: Span,
 }
 

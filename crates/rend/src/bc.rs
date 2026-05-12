@@ -25,6 +25,12 @@ pub struct BcModule {
     /// Each path is `(state_idx, [field_names])`; the resolved leaf key and
     /// type are baked in so the VM can issue a single granular cell access.
     pub path_specs: Vec<PathSpec>,
+    /// Event-handler dispatch table: struct name → ordered list of
+    /// `BcFn` indices into `functions`. Populated from `on Foo fn h
+    /// (...)` declarations. The scheduler walks each emit and runs
+    /// every handler whose key matches the emit's struct name in the
+    /// listed order.
+    pub handler_dispatch: HashMap<String, Vec<u16>>,
     pub enum_shapes: Vec<EnumShape>,
     pub enum_index: HashMap<String, usize>,
     /// Interface declarations carried in the artifact so a tx

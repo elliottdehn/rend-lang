@@ -86,8 +86,12 @@ const VERSION_MAJOR: u8 = 0;
 ///         of `Option<String>` group names that controls storage
 ///         granularity. Ungrouped fields each get their own cell;
 ///         grouped fields share a cell named after the group.
+///   0.15 → BcModule carries `handler_dispatch` (event struct name
+///         → ordered handler fn indices). `event` decl/positional
+///         emit removed; `Instr::Emit` now takes a single value
+///         register holding the struct payload.
 /// Older readers can't decode newer formats.
-const VERSION_MINOR: u8 = 14;
+const VERSION_MINOR: u8 = 15;
 
 /// A compiled artifact: bytes + content hash + the materialized
 /// `BcModule`s. Either `bytes` or `modules` is canonical depending
@@ -236,6 +240,17 @@ fn write_module(out: &mut Vec<u8>, m: &BcModule) {
             write_type(out, &meth.return_type);
         }
     }
+    // Handler dispatch: deterministic order so the wire format is
+    // reproducible across compile passes. Sort by key.
+    let mut handler_keys: Vec<&String> = m.handler_dispatch.keys().collect();
+    handler_keys.sort();
+    write_u32(out, handler_keys.len() as u32);
+    for k in handler_keys {
+        write_str(out, k);
+        let idxs = &m.handler_dispatch[k];
+        write_u32(out, idxs.len() as u32);
+        for idx in idxs { write_u16(out, *idx); }
+    }
 }
 
 fn read_module(r: &mut Reader) -> Result<BcModule, Error> {
@@ -343,12 +358,22 @@ fn read_module(r: &mut Reader) -> Result<BcModule, Error> {
             name, methods, span: crate::token::Span::default(),
         });
     }
+    let n_handlers = r.read_u32()? as usize;
+    let mut handler_dispatch: HashMap<String, Vec<u16>> = HashMap::with_capacity(n_handlers);
+    for _ in 0..n_handlers {
+        let key = read_str(r)?;
+        let n_idx = r.read_u32()? as usize;
+        let mut idxs = Vec::with_capacity(n_idx);
+        for _ in 0..n_idx { idxs.push(r.read_u16()?); }
+        handler_dispatch.insert(key, idxs);
+    }
     Ok(BcModule {
         name, imports, import_index,
         state_roots, state_types, state_defaults, state_names, state_index,
         struct_shapes, struct_index,
         functions, fn_index,
         path_specs,
+        handler_dispatch,
         enum_shapes, enum_index,
         interfaces, interface_index,
     })
