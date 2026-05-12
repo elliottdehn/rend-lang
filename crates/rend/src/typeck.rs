@@ -1692,13 +1692,17 @@ impl TypeChecker {
                 // `[string]` that the JIT-codegen layer embeds as an
                 // explicit literal.
                 let src_ty = self.check_expr(source, env)?;
-                // Unwrap any `` `[T]` `` tag — at the parallel-for-to
-                // boundary we only care about the element type. The
-                // safety property (inert at construction) has already
-                // been enforced; downstream iteration treats the
-                // array's contents as ordinary values.
-                let elem_id_ty = match src_ty.unwrap_explicit() {
-                    Type::Array(elem) => (**elem).clone(),
+                // Sticky propagates through iteration: `` `[T]` ``
+                // yields per-leg elements of type `` `T` `` (the
+                // surrounding inert-literal context guarantees each
+                // element was constructed inertly). Plain `[T]`
+                // yields plain T.
+                let (was_tagged, src_inner) = match src_ty {
+                    Type::ExplicitLiteral(inner) => (true, *inner),
+                    other => (false, other),
+                };
+                let plain_elem = match src_inner {
+                    Type::Array(elem) => (*elem).clone(),
                     other => return Err(Error::new(
                         ErrorKind::Type,
                         format!(
@@ -1706,6 +1710,11 @@ impl TypeChecker {
                         ),
                         *span,
                     )),
+                };
+                let elem_id_ty = if was_tagged {
+                    Type::ExplicitLiteral(Box::new(plain_elem))
+                } else {
+                    plain_elem
                 };
                 // Output must be [T] for some T; body tail must
                 // produce a value compatible with T.
@@ -2228,7 +2237,7 @@ impl TypeChecker {
                     )),
                 };
                 let actual_key = self.check_expr(key, env)?;
-                if &actual_key != kt.as_ref() {
+                if !types_compatible(&actual_key, kt) {
                     return Err(Error::new(
                         ErrorKind::Type,
                         format!("map key: expected {kt}, got {actual_key}"),
@@ -2386,7 +2395,7 @@ impl TypeChecker {
                 if let ExprKind::Ident(name) = &target.kind {
                     if let Some(Type::Map { key: kt, value: vt }) = self.states.get(name) {
                         let actual_key = self.check_expr(key, env)?;
-                        if &actual_key != kt.as_ref() {
+                        if !types_compatible(&actual_key, kt) {
                             return Err(Error::new(
                                 ErrorKind::Type,
                                 format!("map key: expected {kt}, got {actual_key}"),
@@ -2398,7 +2407,7 @@ impl TypeChecker {
                     // pmap state: same shape on the user side as map.
                     if let Some(Type::PMap { key: kt, value: vt }) = self.states.get(name) {
                         let actual_key = self.check_expr(key, env)?;
-                        if &actual_key != kt.as_ref() {
+                        if !types_compatible(&actual_key, kt) {
                             return Err(Error::new(
                                 ErrorKind::Type,
                                 format!("pmap key: expected {kt}, got {actual_key}"),

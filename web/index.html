@@ -186,8 +186,11 @@
 
 <span class="c">// One read on a dedup hit; two writes on a miss. The slot comes</span>
 <span class="c">// from a caller-side `reserve`, so this function never contends</span>
-<span class="c">// on `next_id`.</span>
-<span class="k">entry fn</span> intern_at(s: <span class="t">string</span>, slot: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+<span class="c">// on `next_id`. `s` is declared `` `string` `` — sticky — so any</span>
+<span class="c">// call site must supply a backtick-tagged value (or one that</span>
+<span class="c">// flowed through a sticky binding). Computed strings are</span>
+<span class="c">// rejected at typeck. Safety is structural, not patrolled.</span>
+<span class="k">entry fn</span> intern_at(s: <span class="k">`</span><span class="t">string</span><span class="k">`</span>, slot: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
     <span class="k">let</span> existing = forward[s];
     <span class="k">if</span> existing &gt; <span class="n">0u64</span> { <span class="k">return</span> existing; }
     forward[s] = slot;

@@ -320,6 +320,61 @@ fn array_indexing_on_explicit_literal_array_preserves_tag() {
 }
 
 #[test]
+fn sticky_propagates_through_parallel_for_iteration() {
+    // Iterating a `` `[T]` `` source in parallel-for-to yields
+    // per-leg elements of `` `T` `` — the surrounding inert-literal
+    // context guarantees every element was inert at construction.
+    // Confirms the body can pass each element into a `` `T` ``-typed
+    // parameter without re-wrapping.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module el;
+        state forward: pmap<string, u64>;
+        state next_id: u64;
+        entry fn intern_at(s: `string`, slot: u64) -> u64 {
+            let e = forward[s];
+            if e > 0u64 { return e; }
+            forward[s] = slot;
+            return slot;
+        }
+        fn main() -> u64 {
+            let inputs = `["a", "b"]`;
+            let slots  = reserve 2u64 from next_id;
+            let ids    = arr<u64>[2u64];
+            parallel for (i, s) in inputs to ids {
+                intern_at(s, slots[i])
+            }
+            return ids[0i64] + ids[1i64];
+        }
+    "#;
+    // slots = [1, 2]; ids = [1, 2]; sum = 3
+    let out = Engine::new().execute(src, Fuel::new(50_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(3));
+}
+
+#[test]
+fn sticky_widens_to_plain_for_pmap_key_lookup() {
+    // pmap key lookups now use `types_compatible` rather than
+    // strict equality, so a sticky `` `string` `` key flows
+    // into a `pmap<string, _>` cell access. This is the
+    // case the landing-page intern_at function exercises.
+    let kv = rend::kv::InMemoryKv::new();
+    let src = r#"
+        module el;
+        state forward: pmap<string, u64>;
+        entry fn lookup(s: `string`) -> u64 {
+            return forward[s];   // s is `string`, key type is string — widens
+        }
+        fn main() -> u64 {
+            forward[`"alice"`] = 99u64;
+            return lookup(`"alice"`);
+        }
+    "#;
+    let out = Engine::new().execute(src, Fuel::new(20_000), &kv).unwrap();
+    assert_eq!(out.result, Value::U64(99));
+}
+
+#[test]
 fn struct_field_typed_as_sticky_requires_backtick_value() {
     // Declaring a struct field as `` `T` `` forces every value
     // populating that field to originate from a backtick.
