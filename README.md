@@ -1,5 +1,7 @@
 # rend
 
+Code samples: https://github.com/elliottdehn/rend-lang/tree/main/crates/rend/examples
+
 A programmable transactional key-value store with a typed contract
 language on top. Single-node, multi-tenant via EOA-style auth,
 durable through RocksDB.
